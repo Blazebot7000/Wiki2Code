@@ -1,0 +1,35 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compileOnSave": false,
+  "files": [],
+  "references": [
+    {
+      "path": "./apps/web"
+    },
+    {
+      "path": "./apps/gateway"
+    },
+    {
+      "path": "./apps/github-svc"
+    },
+    {
+      "path": "./apps/ai-svc"
+    },
+    {
+      "path": "./apps/review-svc"
+    },
+    {
+      "path": "./apps/sync-svc"
+    },
+    {
+      "path": "./libs/contracts"
+    },
+    {
+      "path": "./libs/server"
+    },
+    {
+      "path": "./libs/markdown"
+    }
+  ],
+  "compilerOptions": {}
+}

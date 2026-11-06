@@ -1,0 +1,7 @@
+{
+  "name": "@org/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Electron shell for Wiki2Code",
+  "main": "main.js"
+}
