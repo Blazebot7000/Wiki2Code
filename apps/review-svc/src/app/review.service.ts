@@ -117,6 +117,22 @@ export class ReviewService {
     return changed;
   }
 
+  clearRepo(repoId: string): { removed: number } {
+    const state = reviewStore.read();
+    const highlights = state.highlights.filter(
+      (item) => item.repoId !== repoId,
+    );
+    const removed = state.highlights.length - highlights.length;
+    if (removed > 0) {
+      reviewStore.write({
+        ...state,
+        highlights,
+        version: state.version + 1,
+      });
+    }
+    return { removed };
+  }
+
   createJob(job: ReviewJob): ReviewJob {
     const state = reviewStore.read();
     reviewStore.write({

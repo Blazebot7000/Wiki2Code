@@ -50,6 +50,7 @@ export const REVIEW_PATTERNS = {
   HIGHLIGHTS_REPLACE_PAGE: 'review.highlights.replacePage',
   HIGHLIGHTS_UPDATE: 'review.highlights.update',
   HIGHLIGHTS_MARK_STALE: 'review.highlights.markStale',
+  HIGHLIGHTS_CLEAR_REPO: 'review.highlights.clearRepo',
   JOBS_CREATE: 'review.jobs.create',
   JOBS_UPDATE: 'review.jobs.update',
   JOBS_GET: 'review.jobs.get',

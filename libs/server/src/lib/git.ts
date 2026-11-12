@@ -1,4 +1,6 @@
 import { exec, execFile } from 'node:child_process';
+import { existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -34,6 +36,27 @@ const GIT_ENV = {
   GIT_TERMINAL_PROMPT: '0',
   GCM_INTERACTIVE: 'never',
 };
+
+const GITHUB_HOST = 'https://github.com';
+
+/**
+ * Pass the token through a per-command HTTP header instead of embedding it in
+ * the remote URL. Anything in `.git/config` survives restarts and is easy to
+ * leak (backups, support bundles, accidentally zipped workspaces), so remotes
+ * are always stored tokenless.
+ */
+function authArgs(token?: string): string[] {
+  if (!token) {
+    return [];
+  }
+  const basic = Buffer.from(`x-access-token:${token}`, 'utf8').toString(
+    'base64',
+  );
+  return [
+    '-c',
+    `http.${GITHUB_HOST}/.extraheader=AUTHORIZATION: basic ${basic}`,
+  ];
+}
 
 export async function runGit(
   args: string[],
@@ -75,22 +98,23 @@ export async function runShell(
   }
 }
 
-export function remoteUrl(
-  owner: string,
-  repo: string,
-  token: string,
-  wiki = false,
-): string {
+export function remoteUrl(owner: string, repo: string, wiki = false): string {
   const suffix = wiki ? '.wiki.git' : '.git';
-  return `https://x-access-token:${token}@github.com/${owner}/${repo}${suffix}`;
+  return `${GITHUB_HOST}/${owner}/${repo}${suffix}`;
 }
 
 export async function cloneRepo(
   dir: string,
   url: string,
   branch?: string,
+  token?: string,
 ): Promise<void> {
-  const args = ['clone', '--no-tags', '--depth', '50'];
+  // A previous clone may have failed halfway and left a non-empty folder that
+  // git refuses to clone into. Start from a clean directory in that case.
+  if (existsSync(dir) && !existsSync(join(dir, '.git'))) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const args = [...authArgs(token), 'clone', '--no-tags', '--depth', '50'];
   if (branch) {
     args.push('--branch', branch);
   }
@@ -98,9 +122,36 @@ export async function cloneRepo(
   await runGit(args, process.cwd(), 10 * 60_000);
 }
 
-export async function fetchAndReset(dir: string, branch: string): Promise<void> {
-  await runGit(['fetch', '--depth', '50', 'origin', branch], dir);
+export async function fetchAndReset(
+  dir: string,
+  branch: string,
+  token?: string,
+): Promise<void> {
+  await runGit(
+    [...authArgs(token), 'fetch', '--depth', '50', 'origin', branch],
+    dir,
+  );
   await runGit(['reset', '--hard', `origin/${branch}`], dir);
+}
+
+/**
+ * Remove credentials that older builds embedded in the clone's remote URL.
+ * Safe to call on any directory: failures (not a repo, no origin) are ignored.
+ */
+export async function scrubRemote(dir: string): Promise<void> {
+  try {
+    const { stdout } = await runGit(['remote', 'get-url', 'origin'], dir);
+    const url = stdout.trim();
+    if (!url) {
+      return;
+    }
+    const safe = url.replace(/^(https?:\/\/)[^@/]+@/i, '$1');
+    if (safe !== url) {
+      await runGit(['remote', 'set-url', 'origin', safe], dir);
+    }
+  } catch {
+    // No remote or not a git checkout.
+  }
 }
 
 export async function currentSha(dir: string): Promise<string> {
@@ -111,8 +162,12 @@ export async function currentSha(dir: string): Promise<string> {
 export async function remoteSha(
   dir: string,
   branch: string,
+  token?: string,
 ): Promise<string | undefined> {
-  const { stdout } = await runGit(['ls-remote', 'origin', `refs/heads/${branch}`], dir);
+  const { stdout } = await runGit(
+    [...authArgs(token), 'ls-remote', 'origin', `refs/heads/${branch}`],
+    dir,
+  );
   const line = stdout.trim().split(/\r?\n/)[0];
   return line ? line.split(/\s+/)[0] : undefined;
 }
@@ -174,8 +229,13 @@ export async function commitAll(
 export async function pushBranch(
   dir: string,
   branch: string,
+  token?: string,
 ): Promise<void> {
-  await runGit(['push', '-u', 'origin', branch], dir, 10 * 60_000);
+  await runGit(
+    [...authArgs(token), 'push', '-u', 'origin', branch],
+    dir,
+    10 * 60_000,
+  );
 }
 
 export async function hasChanges(dir: string): Promise<boolean> {

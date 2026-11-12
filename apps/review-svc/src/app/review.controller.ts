@@ -43,6 +43,11 @@ export class ReviewController {
     return { changed: this.reviews.markStale(payload) };
   }
 
+  @MessagePattern(REVIEW_PATTERNS.HIGHLIGHTS_CLEAR_REPO)
+  clearRepo(payload: { repoId: string }) {
+    return this.reviews.clearRepo(payload.repoId);
+  }
+
   @MessagePattern(REVIEW_PATTERNS.JOBS_CREATE)
   createJob(payload: ReviewJob) {
     return this.reviews.createJob(payload);

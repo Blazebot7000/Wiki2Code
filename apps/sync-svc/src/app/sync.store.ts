@@ -8,6 +8,8 @@ export interface WatcherState {
   lastCodeSha?: string;
   lastWikiSha?: string;
   pendingReview: boolean;
+  /** Changed paths to retry an incremental review with, if one is pending. */
+  pendingPaths?: string[];
   lastError?: string;
 }
 

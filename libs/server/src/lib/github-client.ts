@@ -86,10 +86,19 @@ export class GithubClient {
   }
 
   async listRepos(): Promise<RepoSummary[]> {
-    const repos = await this.request<RawRepo[]>(
-      '/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member',
-    );
-    return repos.map((repo) => this.mapRepo(repo));
+    const repos: RepoSummary[] = [];
+    // `/user/repos` is paginated and defaults to 30 per page. Walk the pages so
+    // accounts with many repositories can still find the one they want.
+    for (let page = 1; page <= 10; page += 1) {
+      const batch = await this.request<RawRepo[]>(
+        `/user/repos?per_page=100&page=${page}&sort=updated&affiliation=owner,collaborator,organization_member`,
+      );
+      repos.push(...batch.map((repo) => this.mapRepo(repo)));
+      if (batch.length < 100) {
+        break;
+      }
+    }
+    return repos;
   }
 
   async getRepo(owner: string, name: string): Promise<RepoSummary> {

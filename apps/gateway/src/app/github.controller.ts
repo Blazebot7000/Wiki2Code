@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   GITHUB_PATTERNS,
+  REVIEW_PATTERNS,
   SYNC_PATTERNS,
   type ConnectedRepo,
   type DeviceFlowPoll,
@@ -53,8 +54,39 @@ export class GithubController {
   }
 
   @Post('github/logout')
-  logout() {
-    return sendTo(this.clients.github, GITHUB_PATTERNS.AUTH_LOGOUT, {});
+  async logout() {
+    // Stop watchers and remove local clones before dropping the token, so the
+    // monitoring timers do not keep failing against a repo that no longer
+    // exists locally.
+    const repos = await sendTo<ConnectedRepo[]>(
+      this.clients.github,
+      GITHUB_PATTERNS.REPO_LIST,
+      {},
+    ).catch(() => [] as ConnectedRepo[]);
+    await Promise.allSettled(
+      repos.map((repo) =>
+        sendTo(this.clients.sync, SYNC_PATTERNS.WATCH_STOP, {
+          repoId: repo.repoId,
+        }),
+      ),
+    );
+    await Promise.allSettled(
+      repos.map((repo) =>
+        sendTo(this.clients.github, GITHUB_PATTERNS.REPO_DISCONNECT, {
+          repoId: repo.repoId,
+        }),
+      ),
+    );
+    await Promise.allSettled(
+      repos.map((repo) =>
+        sendTo(this.clients.review, REVIEW_PATTERNS.HIGHLIGHTS_CLEAR_REPO, {
+          repoId: repo.repoId,
+        }),
+      ),
+    );
+    const result = await sendTo(this.clients.github, GITHUB_PATTERNS.AUTH_LOGOUT, {});
+    gatewayStore.update((state) => ({ ...state, activeRepoId: undefined }));
+    return result;
   }
 
   @Get('github/repos')
@@ -103,6 +135,13 @@ export class GithubController {
       GITHUB_PATTERNS.REPO_DISCONNECT,
       { repoId },
     );
+    // Drop findings for the removed repository so reconnecting it later starts
+    // from a clean slate instead of showing highlights for a stale clone.
+    await sendTo(
+      this.clients.review,
+      REVIEW_PATTERNS.HIGHLIGHTS_CLEAR_REPO,
+      { repoId },
+    ).catch(() => undefined);
     const state = gatewayStore.read();
     if (state.activeRepoId === repoId) {
       gatewayStore.update((current) => ({ ...current, activeRepoId: undefined }));

@@ -1,7 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { join, normalize, sep } from 'node:path';
+import { dirname, join, normalize, sep } from 'node:path';
 import type {
   ConnectedRepo,
   RepoSummary,
@@ -16,6 +16,7 @@ import {
   currentSha,
   defaultBranchOf,
   fetchAndReset,
+  hasChanges,
   isWikiMarkdown,
   listFiles,
   pagePath,
@@ -26,6 +27,7 @@ import {
   remoteUrl,
   repoPath,
   safeRepoId,
+  scrubRemote,
   sortPages,
 } from '@org/server';
 import { GithubAuthService } from './github-auth.service';
@@ -43,10 +45,25 @@ export interface PollResult {
 }
 
 @Injectable()
-export class GithubReposService {
+export class GithubReposService implements OnModuleInit {
   private readonly logger = new Logger(GithubReposService.name);
 
   constructor(private readonly auth: GithubAuthService) {}
+
+  /**
+   * Older builds stored the access token inside `.git/config`. Strip it from
+   * any checkout that is still around before doing anything else.
+   */
+  async onModuleInit(): Promise<void> {
+    for (const repo of githubStore.read().repos) {
+      for (const kind of ['code', 'wiki'] as const) {
+        const dir = repoPath(repo.repoId, kind);
+        if (existsSync(join(dir, '.git'))) {
+          await scrubRemote(dir);
+        }
+      }
+    }
+  }
 
   async listRemote(): Promise<RepoSummary[]> {
     return this.auth.client().listRepos();
@@ -73,8 +90,16 @@ export class GithubReposService {
     const summary = await client.getRepo(payload.owner, payload.name);
 
     if (!summary.hasWiki) {
-      await client.enableWiki(payload.owner, payload.name);
-      summary.hasWiki = true;
+      // Enabling the wiki needs admin rights. Users can still connect a repo
+      // they only have read access to, so do not abort the whole flow.
+      try {
+        await client.enableWiki(payload.owner, payload.name);
+        summary.hasWiki = true;
+      } catch (error) {
+        this.logger.warn(
+          `Could not enable the wiki for ${summary.fullName}: ${this.describe(error)}`,
+        );
+      }
     }
 
     const repoId = safeRepoId(payload.owner, payload.name);
@@ -87,11 +112,13 @@ export class GithubReposService {
       if (!existsSync(join(codeDir, '.git'))) {
         await cloneRepo(
           codeDir,
-          remoteUrl(payload.owner, payload.name, token),
+          remoteUrl(payload.owner, payload.name),
           summary.defaultBranch,
+          token,
         );
       } else {
-        await fetchAndReset(codeDir, summary.defaultBranch);
+        await scrubRemote(codeDir);
+        await fetchAndReset(codeDir, summary.defaultBranch, token);
       }
       codeReady = true;
     } catch (error) {
@@ -103,9 +130,15 @@ export class GithubReposService {
     let wikiError: string | undefined;
     try {
       if (!existsSync(join(wikiDir, '.git'))) {
-        await cloneRepo(wikiDir, remoteUrl(payload.owner, payload.name, token, true));
+        await cloneRepo(
+          wikiDir,
+          remoteUrl(payload.owner, payload.name, true),
+          undefined,
+          token,
+        );
       } else {
-        await fetchAndReset(wikiDir, await this.wikiBranch(wikiDir));
+        await scrubRemote(wikiDir);
+        await fetchAndReset(wikiDir, await this.wikiBranch(wikiDir), token);
       }
       wikiReady = true;
     } catch (error) {
@@ -154,35 +187,59 @@ export class GithubReposService {
     const repo = this.get(repoId);
     const codeDir = repoPath(repoId, 'code');
     const wikiDir = repoPath(repoId, 'wiki');
+    const token = this.auth.requireToken();
+    let codeError: string | undefined;
     let wikiError: string | undefined;
 
-    if (existsSync(join(codeDir, '.git'))) {
-      await fetchAndReset(codeDir, repo.defaultBranch);
-    }
-    if (existsSync(join(wikiDir, '.git'))) {
-      await fetchAndReset(wikiDir, await this.wikiBranch(wikiDir));
-    } else {
-      try {
+    // Re-clone when the earlier clone failed; otherwise fetch the latest.
+    try {
+      if (!existsSync(join(codeDir, '.git'))) {
         await cloneRepo(
-          wikiDir,
-          remoteUrl(repo.owner, repo.name, this.auth.requireToken(), true),
+          codeDir,
+          remoteUrl(repo.owner, repo.name),
+          repo.defaultBranch,
+          token,
         );
-      } catch (error) {
-        wikiError = this.describe(error);
+      } else {
+        await scrubRemote(codeDir);
+        await fetchAndReset(codeDir, repo.defaultBranch, token);
       }
+    } catch (error) {
+      codeError = this.describe(error);
+      this.logger.warn(`Code sync failed for ${repoId}: ${codeError}`);
     }
 
+    try {
+      if (!existsSync(join(wikiDir, '.git'))) {
+        await cloneRepo(
+          wikiDir,
+          remoteUrl(repo.owner, repo.name, true),
+          undefined,
+          token,
+        );
+      } else {
+        await scrubRemote(wikiDir);
+        await fetchAndReset(wikiDir, await this.wikiBranch(wikiDir), token);
+      }
+    } catch (error) {
+      wikiError =
+        `The wiki has no pages yet. Create the first page at ` +
+        `${repo.htmlUrl}/wiki/_new, then press Sync.`;
+      this.logger.warn(`Wiki sync failed for ${repoId}: ${this.describe(error)}`);
+    }
+
+    const codeReady = existsSync(join(codeDir, '.git'));
+    const wikiReady = existsSync(join(wikiDir, '.git'));
     const updated: ConnectedRepo = {
       ...repo,
-      codeReady: existsSync(join(codeDir, '.git')),
-      wikiReady: existsSync(join(wikiDir, '.git')),
-      wikiError,
+      codeReady,
+      wikiReady,
+      wikiError:
+        wikiError ?? (codeError ? `Code sync failed: ${codeError}` : undefined),
       lastCodeSha: await this.shaOrUndefined(codeDir),
       lastWikiSha: await this.shaOrUndefined(wikiDir),
       lastSyncedAt: new Date().toISOString(),
-      wikiPageCount: existsSync(join(wikiDir, '.git'))
-        ? (await this.readWikiPages(repoId)).length
-        : 0,
+      wikiPageCount: wikiReady ? (await this.readWikiPages(repoId)).length : 0,
     };
 
     githubStore.update((state) => ({
@@ -198,49 +255,113 @@ export class GithubReposService {
     const repo = this.get(repoId);
     const codeDir = repoPath(repoId, 'code');
     const wikiDir = repoPath(repoId, 'wiki');
+    const token = this.auth.requireToken();
     const changedPaths: string[] = [];
 
     let codeSha = repo.lastCodeSha;
     let wikiSha = repo.lastWikiSha;
     let codeChanged = false;
     let wikiChanged = false;
+    let wikiError = repo.wikiError;
 
-    if (existsSync(join(codeDir, '.git'))) {
-      const remote = await remoteSha(codeDir, repo.defaultBranch);
-      if (remote && remote !== repo.lastCodeSha) {
-        const previous = repo.lastCodeSha;
-        await fetchAndReset(codeDir, repo.defaultBranch);
-        codeSha = await currentSha(codeDir);
-        codeChanged = true;
-        if (previous) {
-          changedPaths.push(...(await changedFiles(codeDir, previous, codeSha)));
+    // A clone that failed while connecting would otherwise stay unmonitored
+    // forever. Retry it on every poll so temporary failures heal themselves.
+    if (!existsSync(join(codeDir, '.git'))) {
+      try {
+        await cloneRepo(
+          codeDir,
+          remoteUrl(repo.owner, repo.name),
+          repo.defaultBranch,
+          token,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Code clone retry failed for ${repoId}: ${this.describe(error)}`,
+        );
+      }
+    }
+    if (!existsSync(join(wikiDir, '.git'))) {
+      try {
+        await cloneRepo(
+          wikiDir,
+          remoteUrl(repo.owner, repo.name, true),
+          undefined,
+          token,
+        );
+        wikiError = undefined;
+      } catch (error) {
+        wikiError =
+          `The wiki has no pages yet. Create the first page at ` +
+          `${repo.htmlUrl}/wiki/_new, then press Sync.`;
+        this.logger.warn(
+          `Wiki clone retry failed for ${repoId}: ${this.describe(error)}`,
+        );
+      }
+    }
+
+    const codeReady = existsSync(join(codeDir, '.git'));
+    const wikiReady = existsSync(join(wikiDir, '.git'));
+
+    if (codeReady) {
+      if (!repo.lastCodeSha) {
+        codeSha = await this.shaOrUndefined(codeDir);
+        codeChanged = Boolean(codeSha);
+      } else {
+        const remote = await remoteSha(codeDir, repo.defaultBranch, token);
+        if (remote && remote !== repo.lastCodeSha) {
+          const previous = repo.lastCodeSha;
+          await fetchAndReset(codeDir, repo.defaultBranch, token);
+          codeSha = await currentSha(codeDir);
+          codeChanged = true;
+          changedPaths.push(
+            ...(await changedFiles(codeDir, previous, codeSha)),
+          );
         }
       }
     }
 
-    if (existsSync(join(wikiDir, '.git'))) {
+    if (wikiReady) {
       const branch = await this.wikiBranch(wikiDir);
-      const remote = await remoteSha(wikiDir, branch);
-      if (remote && remote !== repo.lastWikiSha) {
-        await fetchAndReset(wikiDir, branch);
-        wikiSha = await currentSha(wikiDir);
-        wikiChanged = true;
+      if (!repo.lastWikiSha) {
+        wikiSha = await this.shaOrUndefined(wikiDir);
+        wikiChanged = Boolean(wikiSha);
+      } else {
+        const remote = await remoteSha(wikiDir, branch, token);
+        if (remote && remote !== repo.lastWikiSha) {
+          await fetchAndReset(wikiDir, branch, token);
+          wikiSha = await currentSha(wikiDir);
+          wikiChanged = true;
+        }
       }
     }
 
-    if (codeChanged || wikiChanged) {
+    let wikiPageCount = wikiReady ? repo.wikiPageCount : 0;
+    if (wikiReady && (wikiChanged || !repo.wikiReady)) {
+      wikiPageCount = (await this.readWikiPages(repoId)).length;
+    }
+
+    const repoChanged =
+      codeChanged ||
+      wikiChanged ||
+      codeReady !== repo.codeReady ||
+      wikiReady !== repo.wikiReady ||
+      wikiError !== repo.wikiError ||
+      wikiPageCount !== repo.wikiPageCount;
+
+    if (repoChanged) {
       githubStore.update((state) => ({
         ...state,
         repos: state.repos.map((item) =>
           item.repoId === repoId
             ? {
                 ...item,
+                codeReady,
+                wikiReady,
+                wikiError,
                 lastCodeSha: codeSha,
                 lastWikiSha: wikiSha,
                 lastSyncedAt: new Date().toISOString(),
-                wikiPageCount: existsSync(join(wikiDir, '.git'))
-                  ? item.wikiPageCount
-                  : 0,
+                wikiPageCount,
               }
             : item,
         ),
@@ -311,7 +432,25 @@ export class GithubReposService {
       );
     }
     const path = this.safeJoin(wikiDir, pagePath(payload.pageSlug));
+    const token = this.auth.requireToken();
+    const branch = await this.wikiBranch(wikiDir);
+
+    // Start from the remote tip so the push cannot be rejected as a
+    // non-fast-forward after a commit landed elsewhere.
+    await scrubRemote(wikiDir);
+    await fetchAndReset(wikiDir, branch, token);
+    mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, payload.markdown, 'utf8');
+
+    if (!(await hasChanges(wikiDir))) {
+      // The rewrite produced the exact same markdown. Treat it as a no-op
+      // instead of failing with "nothing to commit".
+      return {
+        pageSlug: payload.pageSlug,
+        commitSha: await currentSha(wikiDir),
+        markdown: payload.markdown,
+      };
+    }
 
     const sha = await commitAll(
       wikiDir,
@@ -319,7 +458,7 @@ export class GithubReposService {
       'Wiki2Code',
       'wiki2code@users.noreply.github.com',
     );
-    await pushBranch(wikiDir, await this.wikiBranch(wikiDir));
+    await pushBranch(wikiDir, branch, token);
 
     githubStore.update((state) => ({
       ...state,

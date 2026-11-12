@@ -32,6 +32,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SyncService.name);
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly busy = new Set<string>();
+  private destroyed = false;
   private readonly github = createTcpClient(
     Number(process.env.GITHUB_SVC_PORT ?? DEFAULT_PORTS.github),
   );
@@ -43,6 +44,26 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
   );
 
   async onModuleInit(): Promise<void> {
+    await this.restoreWatchers(0);
+  }
+
+  onModuleDestroy(): void {
+    this.destroyed = true;
+    for (const timer of this.timers.values()) {
+      clearInterval(timer);
+    }
+    this.timers.clear();
+  }
+
+  /**
+   * github-svc may still be booting when this service starts. Retry with
+   * backoff instead of giving up on the first failure, otherwise a normal
+   * startup race leaves commit monitoring disabled for the whole session.
+   */
+  private async restoreWatchers(attempt: number): Promise<void> {
+    if (this.destroyed) {
+      return;
+    }
     try {
       const repos = await sendTo<ConnectedRepo[]>(
         this.github,
@@ -52,22 +73,39 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
       const watchers = syncStore.read().watchers;
       for (const repo of repos) {
         const existing = watchers[repo.repoId];
-        if (existing && existing.enabled) {
+        if (existing?.enabled) {
           this.startTimer(existing);
+        } else if (!existing) {
+          // Every connected repository should be monitored, even if its
+          // watcher record was lost.
+          this.start({ repoId: repo.repoId, immediate: false });
         }
       }
+      if (repos.length > 0) {
+        this.logger.log(
+          `Restored commit monitoring for ${repos.length} repositories`,
+        );
+      }
     } catch (error) {
+      if (this.destroyed) {
+        return;
+      }
+      const delay = Math.min(30_000, 1_000 * 2 ** attempt);
+      if (attempt >= 6) {
+        this.logger.warn(
+          `Could not restore watchers: ${this.describe(error)}`,
+        );
+        return;
+      }
       this.logger.warn(
-        `Could not restore watchers at startup: ${this.describe(error)}`,
+        `Could not restore watchers yet (${this.describe(error)}); retrying in ${delay}ms`,
       );
+      const timer = setTimeout(
+        () => void this.restoreWatchers(attempt + 1),
+        delay,
+      );
+      timer.unref?.();
     }
-  }
-
-  onModuleDestroy(): void {
-    for (const timer of this.timers.values()) {
-      clearInterval(timer);
-    }
-    this.timers.clear();
   }
 
   start(payload: {
@@ -159,7 +197,12 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         { repoId },
       );
 
-      let pendingReview = false;
+      const existing = syncStore.read().watchers[repoId];
+      const inheritedPending = existing?.pendingReview === true;
+      const inheritedPaths =
+        inheritedPending && existing?.pendingPaths?.length
+          ? existing.pendingPaths
+          : undefined;
 
       if (poll.codeChanged && poll.changedPaths.length > 0) {
         const stale = await sendTo<{ changed: number }>(
@@ -176,16 +219,38 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
-      if (poll.wikiChanged) {
-        this.logger.log(`Wiki changed in ${repoId}; scheduling review`);
-        pendingReview = true;
-        await this.triggerReview(repoId, undefined);
-        pendingReview = false;
-      } else if (poll.codeChanged && poll.changedPaths.length > 0) {
-        await this.triggerReview(repoId, poll.changedPaths);
+      // A change that was detected but could not be reviewed (no AI provider
+      // yet, ai-svc still booting, provider rate limit) stays pending so the
+      // next tick retries it instead of consuming the commit silently. A code
+      // change with no diff (first clone, recovered checkout) triggers a full
+      // review because there is no path list to narrow it down with.
+      const changeNeedsReview = poll.wikiChanged || poll.codeChanged;
+      const needsReview = inheritedPending || changeNeedsReview;
+      // Carry still-unreviewed paths forward, so a second commit does not hide
+      // the files from the first one that never got reviewed.
+      const pendingPaths = poll.wikiChanged
+        ? undefined
+        : [
+            ...new Set([
+              ...(inheritedPaths ?? []),
+              ...poll.changedPaths,
+            ]),
+          ];
+      const reviewPaths =
+        pendingPaths && pendingPaths.length > 0 ? pendingPaths : undefined;
+      let reviewStarted = false;
+
+      if (needsReview) {
+        reviewStarted = await this.triggerReview(repoId, reviewPaths);
+        if (!reviewStarted) {
+          this.logger.log(
+            `Review for ${repoId} is pending; it will be retried on the next tick.`,
+          );
+        }
       }
 
-      const existing = syncStore.read().watchers[repoId];
+      const pendingReview = needsReview && !reviewStarted;
+
       const watcher: WatcherState = {
         ...(existing ?? { repoId, enabled: true, intervalMs: DEFAULT_INTERVAL }),
         repoId,
@@ -193,6 +258,7 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         lastCodeSha: poll.codeSha ?? existing?.lastCodeSha,
         lastWikiSha: poll.wikiSha ?? existing?.lastWikiSha,
         pendingReview,
+        pendingPaths: pendingReview ? pendingPaths : undefined,
         lastError: undefined,
       };
       this.persist(watcher);
@@ -204,7 +270,9 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         ...(existing ?? { repoId, enabled: true, intervalMs: DEFAULT_INTERVAL }),
         repoId,
         lastCheckedAt: new Date().toISOString(),
-        pendingReview: false,
+        // Keep a pending review pending across a failing poll so it is not lost.
+        pendingReview: existing?.pendingReview ?? false,
+        pendingPaths: existing?.pendingPaths,
         lastError: message,
       };
       this.persist(watcher);
@@ -218,13 +286,36 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
   private async triggerReview(
     repoId: string,
     changedPaths: string[] | undefined,
-  ): Promise<void> {
+  ): Promise<boolean> {
+    // Never run two reviews of the same repository at once: whichever one
+    // finished last would overwrite the other's page highlights. Keep the
+    // change pending and start it from the next tick instead.
+    try {
+      const jobs = await sendTo<ReviewJob[]>(
+        this.reviews,
+        REVIEW_PATTERNS.JOBS_LIST,
+        { repoId },
+      );
+      if (
+        jobs.some(
+          (job) => job.status === 'queued' || job.status === 'running',
+        )
+      ) {
+        this.logger.log(
+          `A review is already running for ${repoId}; deferring the next one.`,
+        );
+        return false;
+      }
+    } catch {
+      // If the review service is unreachable, fall through and let the start
+      // call report the real error.
+    }
     const model = await this.selectedModel();
     if (!model) {
       this.logger.warn(
         `Skipping automatic review for ${repoId}: no AI provider connected`,
       );
-      return;
+      return false;
     }
     try {
       const job = await sendTo<ReviewJob>(this.ai, AI_PATTERNS.REVIEW_START, {
@@ -234,10 +325,12 @@ export class SyncService implements OnModuleInit, OnModuleDestroy {
         changedPaths,
       });
       this.logger.log(`Started review ${job.id} for ${repoId}`);
+      return true;
     } catch (error) {
       this.logger.warn(
         `Could not start automatic review for ${repoId}: ${this.describe(error)}`,
       );
+      return false;
     }
   }
 

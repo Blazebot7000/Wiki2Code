@@ -40,6 +40,9 @@ interface BatchResult {
   findings: Finding[];
 }
 
+const MAX_BATCH_BLOCKS = 5;
+const MAX_BATCH_CHARS = 4200;
+
 const SYSTEM_PROMPT = `You are Wiki2Code's documentation auditor. You compare a project's wiki documentation with its actual source code and report only real contradictions.
 
 Rules:
@@ -81,14 +84,21 @@ export class ReviewEngineService {
       startedAt: new Date().toISOString(),
     };
     await sendTo(this.reviews, REVIEW_PATTERNS.JOBS_CREATE, job);
-    void this.run(job, { ...payload, model }).catch((error) => {
-      this.logger.error(`Review ${job.id} failed: ${String(error)}`);
-      void this.finish(job.id, {
-        status: 'failed',
-        stage: 'Review failed',
-        error: error instanceof Error ? error.message : String(error),
+    void this.run(job, { ...payload, model })
+      .catch((error) => {
+        if (this.cancelled.has(job.id)) {
+          return;
+        }
+        this.logger.error(`Review ${job.id} failed: ${String(error)}`);
+        void this.finish(job.id, {
+          status: 'failed',
+          stage: 'Review failed',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        this.cancelled.delete(job.id);
       });
-    });
     return job;
   }
 
@@ -100,13 +110,26 @@ export class ReviewEngineService {
     );
   }
 
-  cancel(jobId: string): { ok: true } {
+  async cancel(jobId: string): Promise<{ ok: true }> {
+    const current = await this.get(jobId);
+    if (
+      current &&
+      (current.status === 'completed' ||
+        current.status === 'failed' ||
+        current.status === 'cancelled')
+    ) {
+      return { ok: true };
+    }
     this.cancelled.add(jobId);
-    void this.finish(jobId, { status: 'cancelled', stage: 'Cancelled' });
+    await this.finish(jobId, { status: 'cancelled', stage: 'Cancelled' });
     return { ok: true };
   }
 
   private async run(job: ReviewJob, payload: ReviewRequest): Promise<void> {
+    await this.review(job, payload);
+  }
+
+  private async review(job: ReviewJob, payload: ReviewRequest): Promise<void> {
     await this.update(job.id, { status: 'running', stage: 'Loading wiki' });
 
     const pages = await sendTo<WikiPageMeta[]>(
@@ -132,12 +155,8 @@ export class ReviewEngineService {
     );
 
     const pagePlans: { meta: WikiPageMeta; blocks: MdBlock[] }[] = [];
-    let blockBudget = 90;
 
     for (const meta of pages) {
-      if (blockBudget <= 0) {
-        break;
-      }
       const page = await sendTo<WikiPage>(
         this.github,
         GITHUB_PATTERNS.WIKI_GET,
@@ -159,11 +178,13 @@ export class ReviewEngineService {
           );
         });
       }
-      blocks = blocks.slice(0, blockBudget);
-      blockBudget -= blocks.length;
       if (blocks.length) {
         pagePlans.push({ meta, blocks });
       }
+    }
+
+    if (this.cancelled.has(job.id)) {
+      return;
     }
 
     if (!pagePlans.length) {
@@ -177,8 +198,13 @@ export class ReviewEngineService {
 
     const batches: { meta: WikiPageMeta; blocks: MdBlock[] }[] = [];
     for (const plan of pagePlans) {
-      for (const group of chunkBlocks(plan.blocks, 4200)) {
-        batches.push({ meta: plan.meta, blocks: group.slice(0, 5) });
+      for (const group of chunkBlocks(plan.blocks, MAX_BATCH_CHARS)) {
+        for (let index = 0; index < group.length; index += MAX_BATCH_BLOCKS) {
+          batches.push({
+            meta: plan.meta,
+            blocks: group.slice(index, index + MAX_BATCH_BLOCKS),
+          });
+        }
       }
     }
 
@@ -239,9 +265,16 @@ export class ReviewEngineService {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
+    if (this.cancelled.has(job.id)) {
+      return;
+    }
+
     // Keep the previous highlights for pages whose batch failed: replacing them
     // with an empty list would silently erase real findings.
     for (const plan of pagePlans) {
+      if (this.cancelled.has(job.id)) {
+        return;
+      }
       if (failedPages.has(plan.meta.slug)) {
         continue;
       }
@@ -261,6 +294,10 @@ export class ReviewEngineService {
           ? `The review could not run: ${lastError ?? 'unknown error'}`
           : `${failures} of ${batches.length} review batches failed: ${lastError ?? 'unknown error'}`,
       );
+    }
+
+    if (this.cancelled.has(job.id)) {
+      return;
     }
 
     await this.finish(job.id, {

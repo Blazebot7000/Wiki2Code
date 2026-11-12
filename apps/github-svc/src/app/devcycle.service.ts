@@ -17,6 +17,7 @@ import {
   remoteUrl,
   repoPath,
   runShell,
+  scrubRemote,
   truncate,
 } from '@org/server';
 import { GithubAuthService } from './github-auth.service';
@@ -95,12 +96,16 @@ export class DevCycleService {
   ): Promise<void> {
     const repo = this.repos.get(payload.repoId);
     const dir = repoPath(payload.repoId, 'code');
+    const token = this.auth.requireToken();
     if (!existsSync(join(dir, '.git'))) {
       await cloneRepo(
         dir,
-        remoteUrl(repo.owner, repo.name, this.auth.requireToken()),
+        remoteUrl(repo.owner, repo.name),
         repo.defaultBranch,
+        token,
       );
+    } else {
+      await scrubRemote(dir);
     }
 
     if (await hasChanges(dir)) {
@@ -110,7 +115,7 @@ export class DevCycleService {
     }
 
     this.step(job.id, 'branching', `Checking out ${repo.defaultBranch}`);
-    await fetchAndReset(dir, repo.defaultBranch);
+    await fetchAndReset(dir, repo.defaultBranch, token);
     await createBranch(dir, job.branch, `origin/${repo.defaultBranch}`);
 
     this.step(job.id, 'editing', `Applying ${payload.plan.edits.length} file edit(s)`);
@@ -163,7 +168,7 @@ export class DevCycleService {
     this.logger.log(`Committed ${sha} on ${job.branch}`);
 
     this.step(job.id, 'pushing', `Pushing ${job.branch}`);
-    await pushBranch(dir, job.branch);
+    await pushBranch(dir, job.branch, token);
 
     this.step(job.id, 'opening-pr', 'Opening pull request');
     const pull = await this.auth.client().createPullRequest(repo.owner, repo.name, {
@@ -188,7 +193,7 @@ export class DevCycleService {
     this.step(job.id, 'done', `Pull request: ${pull.html_url}`, true);
     this.finish(job.id, 'completed', pull.html_url);
 
-    await fetchAndReset(dir, repo.defaultBranch);
+    await fetchAndReset(dir, repo.defaultBranch, token);
   }
 
   private async runCommand(
@@ -279,7 +284,9 @@ export class DevCycleService {
     const slug = input
       .toLowerCase()
       .replace(/[^a-z0-9/.-]+/g, '-')
-      .replace(/^-+|-+$/g, '')
+      .replace(/\.{2,}/g, '.')
+      .replace(/\/{2,}/g, '/')
+      .replace(/^[./-]+|[./-]+$/g, '')
       .slice(0, 60);
     return `wiki2code/${slug || 'fix'}-${Date.now().toString(36)}`;
   }

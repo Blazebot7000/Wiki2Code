@@ -11,7 +11,16 @@ async function bootstrap() {
     bodyParser: true,
   });
   app.useBodyParser('json', { limit: '10mb' });
-  app.enableCors({ origin: true, credentials: true });
+  // Only the local UI (desktop window on :3000, Vite dev server on :4200) may
+  // call this API. Reflecting arbitrary origins would let any website drive the
+  // signed-in GitHub account.
+  app.enableCors({
+    origin: [
+      /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+      /^http:\/\/localhost(:\d+)?$/,
+    ],
+    credentials: true,
+  });
   app.useGlobalFilters(new ApiExceptionFilter());
 
   // In the desktop build the gateway also serves the compiled web UI, so the

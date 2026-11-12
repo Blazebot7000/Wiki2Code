@@ -271,11 +271,13 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
     }
     setSyncing(true);
     try {
+      // Poll first: it is what detects commits pushed outside the app and
+      // starts the incremental review. syncRepo then refreshes local clones.
+      await api.syncNow(activeRepoId).catch(() => undefined);
       const repo = await api.syncRepo(activeRepoId);
       setRepos((current) =>
         current.map((item) => (item.repoId === repo.repoId ? repo : item)),
       );
-      await api.syncNow(activeRepoId).catch(() => undefined);
       await refreshPages();
       setReloadToken((value) => value + 1);
       setToast('Repository synced from GitHub.');
@@ -514,9 +516,11 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
             <span>
               {job.status === 'failed'
                 ? `Review failed: ${job.error ?? 'unknown error'}`
-                : `Review complete — ${job.highlightCount} finding${
-                    job.highlightCount === 1 ? '' : 's'
-                  }.`}
+                : job.status === 'cancelled'
+                  ? 'Review cancelled. Existing highlights were kept.'
+                  : `Review complete — ${job.highlightCount} finding${
+                      job.highlightCount === 1 ? '' : 's'
+                    }.`}
             </span>
             <button
               type="button"
