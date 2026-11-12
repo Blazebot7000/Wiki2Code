@@ -25,6 +25,7 @@ const DEFAULT_BASE: Record<AiProviderId, string> = {
   anthropic: 'https://api.anthropic.com/v1',
   google: 'https://generativelanguage.googleapis.com/v1beta',
   openrouter: 'https://openrouter.ai/api/v1',
+  opencode: 'https://opencode.ai/inference/openai/v1',
   ollama: 'http://127.0.0.1:11434',
 };
 
@@ -33,6 +34,8 @@ const RECOMMENDED: Record<AiProviderId, RegExp> = {
   anthropic: /^claude-(sonnet|opus|haiku)-(4|3\.7)/i,
   google: /^gemini-2\.[05]-(pro|flash)$/i,
   openrouter: /(claude-sonnet-4|gpt-5|gemini-2\.5-pro|deepseek)/i,
+  opencode:
+    /^(claude-sonnet-5|gpt-(6\.1-sol|5\.4-mini)|gemini-3\.8-flash|deepseek-v4\.1-flash)$/i,
   ollama: /(coder|qwen|llama3|deepseek)/i,
 };
 
@@ -223,6 +226,54 @@ export async function validateProvider(input: {
         };
       }
 
+      case 'opencode': {
+        if (!key) {
+          return { ok: false, message: 'An API key is required.', models: [] };
+        }
+        const response = await safeFetch(`${base}/models`, {
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        if (!response.ok) {
+          return { ok: false, message: await readError(response), models: [] };
+        }
+        const body = (await response.json()) as {
+          data?: {
+            id: string;
+            name?: string;
+            type?: string;
+            limit?: { context?: number };
+          }[];
+        };
+        const models = (body.data ?? [])
+          .filter((model) => !model.type || model.type === 'chat')
+          // Free-tier models only work from inside OpenCode, so they would
+          // always fail here. Hide them rather than offer a dead model.
+          .filter(
+            (model) => model.id !== 'big-pickle' && !/-free$/i.test(model.id),
+          )
+          .map((model) => ({
+            ...toModel('opencode', model.id, model.name),
+            ...(model.limit?.context
+              ? { contextWindow: model.limit.context }
+              : {}),
+          }))
+          .sort(sortModels)
+          .slice(0, 120);
+        if (models.length === 0) {
+          return {
+            ok: false,
+            message:
+              'The key works, but no paid models are enabled for this workspace. Enable one in the OpenCode console.',
+            models: [],
+          };
+        }
+        return {
+          ok: true,
+          message: `Connected. ${models.length} models available.`,
+          models,
+        };
+      }
+
       case 'ollama': {
         const response = await safeFetch(`${base}/api/tags`);
         if (!response.ok) {
@@ -273,7 +324,8 @@ export async function chat(request: ChatRequest): Promise<string> {
 
   switch (request.provider) {
     case 'openai':
-    case 'openrouter': {
+    case 'openrouter':
+    case 'opencode': {
       const response = await safeFetch(`${base}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -288,7 +340,11 @@ export async function chat(request: ChatRequest): Promise<string> {
           messages: request.messages,
           temperature,
           max_tokens: request.maxTokens ?? 4000,
-          ...(request.json ? { response_format: { type: 'json_object' } } : {}),
+          // OpenCode Zen translates every model to chat/completions, but not
+          // all of them support OpenAI-style structured output.
+          ...(request.json && request.provider !== 'opencode'
+            ? { response_format: { type: 'json_object' } }
+            : {}),
         }),
       });
       if (!response.ok) {

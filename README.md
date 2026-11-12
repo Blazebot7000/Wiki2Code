@@ -35,7 +35,7 @@ TCP to NestJS microservices behind a small HTTP gateway.
 - Git on `PATH`
 - A GitHub account with access to the repository you want to open
 - At least one AI provider API key (OpenAI, Anthropic, Google Gemini,
-  OpenRouter) or a local Ollama instance
+  OpenRouter, OpenCode Zen) or a local Ollama instance
 
 ## Install and run
 

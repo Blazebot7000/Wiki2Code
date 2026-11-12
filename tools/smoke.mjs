@@ -95,6 +95,20 @@ try {
   const modelsBody = await models.json();
   check('models endpoint is reachable', models.ok && Array.isArray(modelsBody.models));
 
+  const opencode = await fetch(`${base}/api/providers/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider: 'opencode' }),
+  });
+  const opencodeBody = await opencode.json();
+  check(
+    'opencode zen provider is registered',
+    opencode.ok &&
+      opencodeBody.ok === false &&
+      /API key is required/i.test(opencodeBody.message),
+    JSON.stringify(opencodeBody),
+  );
+
   const failures = checks.filter((item) => !item.ok);
   console.log(
     `\n${checks.length - failures.length}/${checks.length} checks passed`,

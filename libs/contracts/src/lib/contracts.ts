@@ -3,6 +3,7 @@ export type AiProviderId =
   | 'anthropic'
   | 'google'
   | 'openrouter'
+  | 'opencode'
   | 'ollama';
 
 export interface ProviderDefinition {
@@ -51,6 +52,15 @@ export const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     requiresKey: true,
     defaultBaseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: 'anthropic/claude-sonnet-4.5',
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode Zen',
+    docsUrl: 'https://opencode.ai/console',
+    keyPlaceholder: 'sk-...',
+    requiresKey: true,
+    defaultBaseUrl: 'https://opencode.ai/inference/openai/v1',
+    defaultModel: 'claude-sonnet-5',
   },
   {
     id: 'ollama',
