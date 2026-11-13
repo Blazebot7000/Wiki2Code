@@ -94,6 +94,39 @@ try {
   const models = await fetch(`${base}/api/models`);
   const modelsBody = await models.json();
   check('models endpoint is reachable', models.ok && Array.isArray(modelsBody.models));
+  check(
+    'models response includes settings metadata',
+    models.ok &&
+      Array.isArray(modelsBody.allModels) &&
+      Array.isArray(modelsBody.hiddenModels),
+    JSON.stringify({
+      allModels: Array.isArray(modelsBody.allModels),
+      hiddenModels: Array.isArray(modelsBody.hiddenModels),
+    }),
+  );
+
+  const visibility = await fetch(`${base}/api/models/visibility`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hiddenModels: [] }),
+  });
+  const visibilityBody = await visibility.json();
+  check(
+    'model visibility can be saved',
+    visibility.ok && Array.isArray(visibilityBody.hiddenModels),
+    `${visibility.status} ${JSON.stringify(visibilityBody)}`,
+  );
+
+  const badVisibility = await fetch(`${base}/api/models/visibility`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hiddenModels: 'not-an-array' }),
+  });
+  check(
+    'invalid model visibility payload is rejected',
+    badVisibility.status === 400,
+    String(badVisibility.status),
+  );
 
   const opencode = await fetch(`${base}/api/providers/validate`, {
     method: 'POST',

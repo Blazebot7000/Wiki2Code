@@ -77,8 +77,35 @@ export interface ModelInfo {
   id: string;
   label: string;
   provider: AiProviderId;
+  /** Connection that offers this model. Models can share an id across providers. */
+  connectionId?: string;
+  /** Human-readable provider/connection label, e.g. "OpenRouter (work)". */
+  providerLabel?: string;
   contextWindow?: number;
   recommended?: boolean;
+  /** True for models that cost nothing to use (local or :free tiers). */
+  free?: boolean;
+}
+
+/**
+ * Stable identity for a model across providers. The same model id can be
+ * offered by several connections, so the connection is part of the key.
+ */
+export function modelKey(
+  model: Pick<ModelInfo, 'id' | 'provider' | 'connectionId'>,
+): string {
+  return `${model.connectionId ?? model.provider}::${model.id}`;
+}
+
+export interface ModelsState {
+  /** Models the user chose to show in the model dropdown. */
+  models: ModelInfo[];
+  /** Every model available from connected providers. */
+  allModels: ModelInfo[];
+  /** Keys of models hidden from the dropdown. */
+  hiddenModels: string[];
+  selectedModel?: string;
+  selectedProviderId?: string;
 }
 
 export interface ProviderConnection {

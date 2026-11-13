@@ -37,6 +37,7 @@ export const AI_PATTERNS = {
   PROVIDERS_REMOVE: 'ai.providers.remove',
   PROVIDERS_SELECT: 'ai.providers.select',
   MODELS_LIST: 'ai.models.list',
+  MODELS_VISIBILITY: 'ai.models.visibility',
   REVIEW_START: 'ai.review.start',
   REVIEW_JOB: 'ai.review.job',
   REVIEW_CANCEL: 'ai.review.cancel',

@@ -3,6 +3,7 @@ import type {
   DevCycleJob,
   Highlight,
   ModelInfo,
+  ModelsState,
   ReviewJob,
   SetupState,
   SyncState,
@@ -13,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, eventsUrl } from '../api';
 import { ConnectRepoDialog } from './connect-repo-dialog';
 import { DevJobDialog } from './job-dialog';
+import { ModelSettingsDialog } from './model-settings-dialog';
 import { ModelSwitcher } from './model-switcher';
 import { WikiPageView } from './wiki-page';
 
@@ -45,7 +47,13 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
   const [page, setPage] = useState<WikiPage>();
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [allModels, setAllModels] = useState<ModelInfo[]>([]);
+  const [hiddenModels, setHiddenModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState(initial.selectedModel);
+  const [selectedProviderId, setSelectedProviderId] = useState(
+    initial.selectedProviderId,
+  );
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [job, setJob] = useState<ReviewJob>();
   const [syncState, setSyncState] = useState<SyncState>();
   const [loadingPage, setLoadingPage] = useState(false);
@@ -61,17 +69,24 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
   const highlightsVersion = useRef(-1);
   const activeRepo = repos.find((repo) => repo.repoId === activeRepoId);
 
+  const applyModels = useCallback((result: ModelsState) => {
+    setModels(result.models);
+    setAllModels(result.allModels);
+    setHiddenModels(result.hiddenModels);
+    if (result.selectedModel) {
+      setSelectedModel(result.selectedModel);
+    }
+    if (result.selectedProviderId) {
+      setSelectedProviderId(result.selectedProviderId);
+    }
+  }, []);
+
   useEffect(() => {
     void api
       .models()
-      .then((result) => {
-        setModels(result.models);
-        if (result.selectedModel) {
-          setSelectedModel(result.selectedModel);
-        }
-      })
+      .then(applyModels)
       .catch((error) => setToast(messageOf(error)));
-  }, []);
+  }, [applyModels]);
 
   useEffect(() => {
     if (!toast) {
@@ -236,13 +251,21 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
     }
   }, [activeRepoId, slug]);
 
-  const changeModel = async (model: string) => {
+  const changeModel = async (model: string, providerId?: string) => {
     const previous = selectedModel;
+    const previousProvider = selectedProviderId;
     setSelectedModel(model);
+    if (providerId) {
+      setSelectedProviderId(providerId);
+    }
     try {
-      await api.selectModel(model);
+      const result = await api.selectModel(model, providerId);
+      if (result.selectedProviderId) {
+        setSelectedProviderId(result.selectedProviderId);
+      }
     } catch (error) {
       setSelectedModel(previous);
+      setSelectedProviderId(previousProvider);
       setToast(messageOf(error));
     }
   };
@@ -471,10 +494,24 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
               {syncing ? 'Syncing…' : 'Sync'}
             </button>
 
+            <button
+              type="button"
+              className="btn btn--ghost btn--small topbar__settings"
+              onClick={() => setSettingsOpen(true)}
+              aria-haspopup="dialog"
+              title="Choose which models appear in the dropdown"
+            >
+              <span aria-hidden="true">⚙</span> Settings
+            </button>
+
             <ModelSwitcher
               models={models}
               selected={selectedModel}
-              onChange={(model) => void changeModel(model)}
+              selectedProviderId={selectedProviderId}
+              onChange={(model, providerId) =>
+                void changeModel(model, providerId)
+              }
+              onOpenSettings={() => setSettingsOpen(true)}
               disabled={Boolean(reviewRunning)}
             />
 
@@ -631,6 +668,19 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
           onConnected={(repo) => {
             setConnectOpen(false);
             void refreshRepo().then(() => setActiveRepoId(repo.repoId));
+          }}
+        />
+      ) : null}
+
+      {settingsOpen ? (
+        <ModelSettingsDialog
+          allModels={allModels}
+          hiddenModels={hiddenModels}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={(state) => {
+            applyModels(state);
+            setSettingsOpen(false);
+            setToast('Model list updated.');
           }}
         />
       ) : null}

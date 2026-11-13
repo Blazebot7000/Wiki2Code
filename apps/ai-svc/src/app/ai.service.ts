@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   PROVIDER_DEFINITIONS,
+  modelKey,
   type AiProviderId,
   type ModelInfo,
+  type ModelsState,
   type ProviderConnection,
   type ProviderValidationResult,
 } from '@org/contracts';
@@ -88,20 +90,22 @@ export class AiService {
     aiSecrets.remove(id);
     aiStore.update((state) => {
       const providers = state.providers.filter((item) => item.id !== id);
-      const selectedStillExists = providers.some(
-        (item) => item.id === state.selectedProviderId,
+      const hiddenModels = (state.hiddenModels ?? []).filter(
+        (key) => !key.startsWith(`${id}::`),
       );
+      const hidden = new Set(hiddenModels);
+      const visible = providers
+        .flatMap((connection) => this.serialize(connection))
+        .filter((model) => !hidden.has(modelKey(model)));
       return {
         ...state,
         providers,
-        selectedProviderId: selectedStillExists
-          ? state.selectedProviderId
-          : providers[0]?.id,
-        selectedModel: providers.some((item) =>
-          item.models.some((model) => model.id === state.selectedModel),
-        )
-          ? state.selectedModel
-          : providers[0]?.models[0]?.id,
+        hiddenModels,
+        ...this.pickSelection(
+          state.selectedModel,
+          state.selectedProviderId,
+          visible,
+        ),
       };
     });
     return { ok: true };
@@ -112,11 +116,19 @@ export class AiService {
     selectedProviderId?: string;
   } {
     const state = aiStore.read();
+    const offered = (connection: ProviderConnection) =>
+      connection.models.some((model) => model.id === payload.model);
     const connection =
-      state.providers.find((item) => item.id === payload.providerId) ??
-      state.providers.find((item) =>
-        item.models.some((model) => model.id === payload.model),
-      );
+      (payload.providerId
+        ? state.providers.find(
+            (item) => item.id === payload.providerId && offered(item),
+          )
+        : undefined) ??
+      state.providers.find(
+        (item) =>
+          item.id === state.selectedProviderId && offered(item),
+      ) ??
+      state.providers.find(offered);
     if (!connection) {
       throw new Error('That model is not offered by a connected provider.');
     }
@@ -131,40 +143,100 @@ export class AiService {
     };
   }
 
-  models(): ModelInfo[] {
-    return aiStore
-      .read()
-      .providers.flatMap((provider) => provider.models);
+  modelsState(): ModelsState {
+    const state = aiStore.read();
+    const allModels = this.allModels();
+    const hiddenModels = state.hiddenModels ?? [];
+    const hidden = new Set(hiddenModels);
+    const models = allModels.filter((model) => !hidden.has(modelKey(model)));
+    return {
+      models,
+      allModels,
+      hiddenModels,
+      ...this.pickSelection(
+        state.selectedModel,
+        state.selectedProviderId,
+        models,
+      ),
+    };
+  }
+
+  setModelVisibility(payload: { hiddenModels: string[] }): ModelsState {
+    const available = this.allModels();
+    const availableKeys = new Set(available.map(modelKey));
+    const hiddenModels = Array.from(
+      new Set(
+        (payload.hiddenModels ?? []).filter((key) => availableKeys.has(key)),
+      ),
+    );
+    if (available.length > 0 && hiddenModels.length >= available.length) {
+      throw new Error(
+        'Keep at least one model visible so reviews and fixes can run.',
+      );
+    }
+    const hidden = new Set(hiddenModels);
+    const visible = available.filter(
+      (model) => !hidden.has(modelKey(model)),
+    );
+    aiStore.update((state) => ({
+      ...state,
+      hiddenModels,
+      ...this.pickSelection(
+        state.selectedModel,
+        state.selectedProviderId,
+        visible,
+      ),
+    }));
+    return this.modelsState();
   }
 
   selection(): { selectedModel?: string; selectedProviderId?: string } {
     const state = aiStore.read();
-    return {
-      selectedModel: this.selectedModel(),
-      selectedProviderId:
-        state.selectedProviderId ?? state.providers[0]?.id,
-    };
+    const allModels = this.allModels();
+    const hidden = new Set(state.hiddenModels ?? []);
+    const visible = allModels.filter(
+      (model) => !hidden.has(modelKey(model)),
+    );
+    return this.pickSelection(
+      state.selectedModel,
+      state.selectedProviderId,
+      visible,
+    );
   }
 
   selectedModel(): string | undefined {
-    const state = aiStore.read();
-    if (state.selectedModel) {
-      return state.selectedModel;
-    }
-    return state.providers[0]?.models[0]?.id;
+    return this.selection().selectedModel;
   }
 
-  resolve(model: string): ModelTarget {
+  resolve(model: string, providerId?: string): ModelTarget {
     const state = aiStore.read();
-    const connection =
-      state.providers.find((item) =>
-        item.models.some((candidate) => candidate.id === model),
-      ) ??
-      state.providers.find((item) => item.id === state.selectedProviderId);
-    if (!connection) {
+    if (state.providers.length === 0) {
       throw new Error('No AI provider is connected. Add one in setup.');
     }
-    const resolvedModel = connection.models.some((item) => item.id === model)
+    const hasModel = (connection: ProviderConnection) =>
+      connection.models.some((candidate) => candidate.id === model);
+
+    const explicit = providerId
+      ? state.providers.find((item) => item.id === providerId)
+      : undefined;
+    if (providerId && !explicit) {
+      throw new Error('That provider is no longer connected.');
+    }
+
+    // Prefer the provider the user picked for this model id. The same id can
+    // be offered by several providers, and routing to the wrong one used to
+    // make the selected provider appear to be ignored.
+    const connection =
+      (explicit && hasModel(explicit) ? explicit : undefined) ??
+      state.providers.find(
+        (item) => item.id === state.selectedProviderId && hasModel(item),
+      ) ??
+      state.providers.find(hasModel) ??
+      explicit ??
+      state.providers.find((item) => item.id === state.selectedProviderId) ??
+      state.providers[0];
+
+    const resolvedModel = hasModel(connection)
       ? model
       : connection.models[0]?.id;
     if (!resolvedModel) {
@@ -200,5 +272,55 @@ export class AiService {
       );
       throw error;
     }
+  }
+
+  private allModels(): ModelInfo[] {
+    return aiStore
+      .read()
+      .providers.flatMap((connection) => this.serialize(connection));
+  }
+
+  /**
+   * Persisted connections can predate `connectionId`/`free`, so always derive
+   * the display fields. The connection id is required to tell identical model
+   * ids from different providers apart.
+   */
+  private serialize(connection: ProviderConnection): ModelInfo[] {
+    const definition = PROVIDER_DEFINITIONS.find(
+      (item) => item.id === connection.provider,
+    );
+    return connection.models.map((model) => ({
+      ...model,
+      connectionId: connection.id,
+      providerLabel: connection.label || definition?.name || connection.provider,
+      free:
+        model.free ??
+        (connection.provider === 'ollama' || /:free$/i.test(model.id)),
+    }));
+  }
+
+  private pickSelection(
+    currentModel: string | undefined,
+    currentProviderId: string | undefined,
+    visible: ModelInfo[],
+  ): { selectedModel?: string; selectedProviderId?: string } {
+    const exact =
+      visible.find(
+        (model) =>
+          model.id === currentModel &&
+          model.connectionId === currentProviderId,
+      ) ??
+      visible.find((model) => model.id === currentModel);
+    const chosen =
+      exact ??
+      visible.find((model) => model.recommended) ??
+      visible[0];
+    if (!chosen) {
+      return { selectedModel: undefined, selectedProviderId: undefined };
+    }
+    return {
+      selectedModel: chosen.id,
+      selectedProviderId: chosen.connectionId,
+    };
   }
 }

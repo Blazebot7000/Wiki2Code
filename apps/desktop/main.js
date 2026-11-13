@@ -134,6 +134,34 @@ function createWindow() {
     }
   });
 
+  // The app hides Electron's menu bar, so without this the webview has no
+  // context menu at all and fields feel like right-click is blocked.
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const flags = params.editFlags;
+    const template = [];
+    if (params.isEditable) {
+      template.push(
+        { label: 'Undo', role: 'undo', enabled: flags.canUndo },
+        { label: 'Redo', role: 'redo', enabled: flags.canRedo },
+        { type: 'separator' },
+        { label: 'Cut', role: 'cut', enabled: flags.canCut },
+        { label: 'Copy', role: 'copy', enabled: flags.canCopy },
+        { label: 'Paste', role: 'paste', enabled: flags.canPaste },
+        { type: 'separator' },
+        { label: 'Select all', role: 'selectAll', enabled: flags.canSelectAll },
+      );
+    } else if (params.selectionText.trim()) {
+      template.push(
+        { label: 'Copy', role: 'copy', enabled: flags.canCopy },
+        { type: 'separator' },
+        { label: 'Select all', role: 'selectAll' },
+      );
+    } else {
+      return;
+    }
+    Menu.buildFromTemplate(template).popup({ window: mainWindow });
+  });
+
   if (DEV_URL) {
     void mainWindow.loadURL(DEV_URL);
     mainWindow.webContents.openDevTools({ mode: 'detach' });

@@ -88,12 +88,15 @@ function toModel(
   provider: AiProviderId,
   id: string,
   label?: string,
+  options: { free?: boolean; contextWindow?: number } = {},
 ): ModelInfo {
   return {
     id,
     label: label?.trim() || id,
     provider,
     recommended: RECOMMENDED[provider].test(id),
+    ...(options.free ? { free: true } : {}),
+    ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
   };
 }
 
@@ -214,10 +217,14 @@ export async function validateProvider(input: {
             })
           : { data: [] };
         const models = (listBody.data ?? [])
-          .filter((model) => !/:free$/i.test(model.id))
-          .map((model) => toModel('openrouter', model.id, model.name))
+          .map((model) =>
+            toModel('openrouter', model.id, model.name, {
+              free: /:free$/i.test(model.id),
+            }),
+          )
           .sort(sortModels)
-          .slice(0, 120);
+          // Keep enough headroom that every free model survives the slice.
+          .slice(0, 160);
         return {
           ok: true,
           message: `Connected as ${keyBody.data?.label ?? 'OpenRouter user'}.`,
@@ -252,10 +259,9 @@ export async function validateProvider(input: {
             (model) => model.id !== 'big-pickle' && !/-free$/i.test(model.id),
           )
           .map((model) => ({
-            ...toModel('opencode', model.id, model.name),
-            ...(model.limit?.context
-              ? { contextWindow: model.limit.context }
-              : {}),
+            ...toModel('opencode', model.id, model.name, {
+              contextWindow: model.limit?.context,
+            }),
           }))
           .sort(sortModels)
           .slice(0, 120);
@@ -287,7 +293,7 @@ export async function validateProvider(input: {
           models?: { name: string }[];
         };
         const models = (body.models ?? [])
-          .map((model) => toModel('ollama', model.name))
+          .map((model) => toModel('ollama', model.name, undefined, { free: true }))
           .sort(sortModels);
         return {
           ok: true,
@@ -314,6 +320,9 @@ export async function validateProvider(input: {
 function sortModels(a: ModelInfo, b: ModelInfo): number {
   if (a.recommended !== b.recommended) {
     return a.recommended ? -1 : 1;
+  }
+  if (a.free !== b.free) {
+    return a.free ? -1 : 1;
   }
   return a.id.localeCompare(b.id);
 }

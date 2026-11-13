@@ -53,10 +53,12 @@ export class AiController {
 
   @MessagePattern(AI_PATTERNS.MODELS_LIST)
   models() {
-    return {
-      ...this.ai.selection(),
-      models: this.ai.models(),
-    };
+    return this.ai.modelsState();
+  }
+
+  @MessagePattern(AI_PATTERNS.MODELS_VISIBILITY)
+  setModelVisibility(payload: { hiddenModels: string[] }) {
+    return this.ai.setModelVisibility(payload);
   }
 
   @MessagePattern(AI_PATTERNS.REVIEW_START)

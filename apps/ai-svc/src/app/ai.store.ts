@@ -5,12 +5,14 @@ export interface AiState {
   providers: ProviderConnection[];
   selectedProviderId?: string;
   selectedModel?: string;
+  hiddenModels: string[];
   jobs: ReviewJob[];
 }
 
 export const aiStore = new JsonStore<AiState>(dataPath('ai-svc.json'), {
   providers: [],
   jobs: [],
+  hiddenModels: [],
 });
 
 export const aiSecrets = new SecretStore(

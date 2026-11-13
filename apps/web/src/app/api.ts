@@ -8,7 +8,7 @@ import type {
   GithubAccount,
   Highlight,
   HighlightStatus,
-  ModelInfo,
+  ModelsState,
   ProviderConnection,
   ProviderValidationResult,
   RepoSummary,
@@ -112,12 +112,12 @@ export const api = {
       '/providers/select',
       { model, providerId },
     ),
-  models: () =>
-    request<{
-      models: ModelInfo[];
-      selectedModel?: string;
-      selectedProviderId?: string;
-    }>('/models'),
+  models: () => request<ModelsState>('/models'),
+  setModelVisibility: (hiddenModels: string[]) =>
+    request<ModelsState>('/models/visibility', {
+      method: 'PUT',
+      body: JSON.stringify({ hiddenModels }),
+    }),
 
   deviceStart: (clientId?: string) =>
     post<DeviceFlowStart>('/github/device/start', { clientId }),

@@ -6,6 +6,7 @@ import {
   Get,
   Param,
   Post,
+  Put,
 } from '@nestjs/common';
 import {
   AI_PATTERNS,
@@ -14,7 +15,7 @@ import {
   type AiProviderId,
   type ConnectedRepo,
   type GithubAccount,
-  type ModelInfo,
+  type ModelsState,
   type ProviderConnection,
   type ProviderValidationResult,
   type SetupState,
@@ -36,11 +37,7 @@ export class SetupController {
         AI_PATTERNS.PROVIDERS_LIST,
         {},
       ),
-      sendTo<{
-        models: ModelInfo[];
-        selectedModel?: string;
-        selectedProviderId?: string;
-      }>(this.clients.ai, AI_PATTERNS.MODELS_LIST, {}),
+      sendTo<ModelsState>(this.clients.ai, AI_PATTERNS.MODELS_LIST, {}),
       sendTo<GithubAccount | undefined>(
         this.clients.github,
         GITHUB_PATTERNS.AUTH_ACCOUNT,
@@ -153,12 +150,20 @@ export class SetupController {
   }
 
   @Get('models')
-  models(): Promise<{
-    models: ModelInfo[];
-    selectedModel?: string;
-    selectedProviderId?: string;
-  }> {
+  models(): Promise<ModelsState> {
     return sendTo(this.clients.ai, AI_PATTERNS.MODELS_LIST, {});
+  }
+
+  @Put('models/visibility')
+  setModelVisibility(
+    @Body() body: { hiddenModels?: string[] },
+  ): Promise<ModelsState> {
+    if (body?.hiddenModels !== undefined && !Array.isArray(body.hiddenModels)) {
+      throw new BadRequestException('hiddenModels must be an array of model keys.');
+    }
+    return sendTo(this.clients.ai, AI_PATTERNS.MODELS_VISIBILITY, {
+      hiddenModels: body?.hiddenModels ?? [],
+    });
   }
 
   @Get('sync-state')
