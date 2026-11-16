@@ -70,6 +70,19 @@ function baseOf(provider: AiProviderId, baseUrl?: string): string {
   return (baseUrl?.trim() || DEFAULT_BASE[provider]).replace(/\/+$/, '');
 }
 
+/**
+ * True for models that cost nothing to use. Besides `:free` variants and
+ * local models, OpenRouter exposes an auto-routing alias, `openrouter/free`,
+ * whose id does not follow the `:free` suffix convention.
+ */
+export function isFreeModel(provider: AiProviderId, id: string): boolean {
+  return (
+    provider === 'ollama' ||
+    /:free$/i.test(id) ||
+    (provider === 'openrouter' && id === 'openrouter/free')
+  );
+}
+
 async function readError(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as {
@@ -255,7 +268,7 @@ export async function validateProvider(input: {
         const models = (listBody.data ?? [])
           .map((model) =>
             toModel('openrouter', model.id, model.name, {
-              free: /:free$/i.test(model.id),
+              free: isFreeModel('openrouter', model.id),
             }),
           )
           .sort(sortModels)

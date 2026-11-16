@@ -230,6 +230,12 @@ export function ModelSettingsDialog({
     await refreshProviderState();
   };
 
+  const refreshProvider = async (id: string) => {
+    const connection = await api.refreshProvider(id);
+    await refreshProviderState();
+    return connection;
+  };
+
   const switchTab = (next: SettingsTab) => {
     setTab(next);
     document.getElementById(`settings-tab-${next}`)?.focus();
@@ -397,7 +403,10 @@ export function ModelSettingsDialog({
                               checked={!hidden.has(key)}
                               onChange={() => toggle(model)}
                             />
-                            <span className="model-settings__label" title={model.label}>
+                            <span
+                              className="model-settings__label"
+                              title={model.label}
+                            >
                               {model.label}
                             </span>
                             <span className="model-settings__tags">
@@ -451,13 +460,18 @@ export function ModelSettingsDialog({
             disabled={reviewRunning}
             onAdd={addProvider}
             onRemove={removeProvider}
+            onRefresh={refreshProvider}
           />
         </div>
 
         <footer className="modal__foot">
           {tab === 'models' ? (
             <>
-              <button type="button" className="btn btn--ghost" onClick={onClose}>
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={onClose}
+              >
                 Cancel
               </button>
               <button
@@ -470,7 +484,11 @@ export function ModelSettingsDialog({
               </button>
             </>
           ) : (
-            <button type="button" className="btn btn--primary" onClick={onClose}>
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={onClose}
+            >
               Done
             </button>
           )}
@@ -487,6 +505,7 @@ function ProviderSettings({
   disabled,
   onAdd,
   onRemove,
+  onRefresh,
 }: {
   providers: ProviderConnection[];
   loading: boolean;
@@ -499,6 +518,7 @@ function ProviderSettings({
     label?: string;
   }) => Promise<ProviderConnection>;
   onRemove: (id: string) => Promise<void>;
+  onRefresh: (id: string) => Promise<ProviderConnection>;
 }) {
   const [selected, setSelected] = useState<AiProviderId>('openai');
   const [apiKey, setApiKey] = useState('');
@@ -563,15 +583,32 @@ function ProviderSettings({
     }
   };
 
+  const refresh = async (provider: ProviderConnection) => {
+    if (blocked) {
+      return;
+    }
+    setBusy(true);
+    setStatus(undefined);
+    try {
+      const updated = await onRefresh(provider.id);
+      setStatus({
+        ok: true,
+        message: `${updated.label} refreshed — ${updated.models.length} models available.`,
+      });
+    } catch (error) {
+      setStatus({ ok: false, message: messageOf(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="provider-settings">
       <section className="provider-settings__section">
         <div className="provider-settings__head">
           <h3>Connected providers</h3>
           <span className="muted">
-            {loading
-              ? 'Loading…'
-              : `${providers.length} connected`}
+            {loading ? 'Loading…' : `${providers.length} connected`}
           </span>
         </div>
 
@@ -592,11 +629,20 @@ function ProviderSettings({
                 <div>
                   <strong>{provider.label}</strong>
                   <small>
-                    {providerName(provider.provider)} · {provider.apiKeyMasked} ·{' '}
-                    {provider.models.length} model
+                    {providerName(provider.provider)} · {provider.apiKeyMasked}{' '}
+                    · {provider.models.length} model
                     {provider.models.length === 1 ? '' : 's'}
                   </small>
                 </div>
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--small"
+                  onClick={() => void refresh(provider)}
+                  disabled={blocked}
+                  title={`Re-fetch ${provider.label}'s models`}
+                >
+                  Refresh
+                </button>
                 <button
                   type="button"
                   className="btn btn--ghost btn--small"
@@ -617,8 +663,8 @@ function ProviderSettings({
 
         {providers.length === 1 ? (
           <p className="hint">
-            Keep at least one provider connected, or add another before
-            removing this one.
+            Keep at least one provider connected, or add another before removing
+            this one.
           </p>
         ) : null}
 
@@ -682,11 +728,7 @@ function ProviderSettings({
                 />
                 <small>
                   Get one at{' '}
-                  <a
-                    href={definition.docsUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
+                  <a href={definition.docsUrl} target="_blank" rel="noreferrer">
                     {definition.docsUrl.replace('https://', '')}
                   </a>
                 </small>

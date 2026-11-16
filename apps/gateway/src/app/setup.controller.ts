@@ -43,7 +43,11 @@ export class SetupController {
         GITHUB_PATTERNS.AUTH_ACCOUNT,
         {},
       ),
-      sendTo<ConnectedRepo[]>(this.clients.github, GITHUB_PATTERNS.REPO_LIST, {}),
+      sendTo<ConnectedRepo[]>(
+        this.clients.github,
+        GITHUB_PATTERNS.REPO_LIST,
+        {},
+      ),
     ]);
 
     const state = gatewayStore.read();
@@ -81,7 +85,11 @@ export class SetupController {
   @Post('setup/reset')
   async reset(): Promise<SetupState> {
     const [repos, providers] = await Promise.all([
-      sendTo<ConnectedRepo[]>(this.clients.github, GITHUB_PATTERNS.REPO_LIST, {}),
+      sendTo<ConnectedRepo[]>(
+        this.clients.github,
+        GITHUB_PATTERNS.REPO_LIST,
+        {},
+      ),
       sendTo<ProviderConnection[]>(
         this.clients.ai,
         AI_PATTERNS.PROVIDERS_LIST,
@@ -91,7 +99,9 @@ export class SetupController {
 
     await Promise.allSettled(
       repos.map((repo) =>
-        sendTo(this.clients.sync, SYNC_PATTERNS.WATCH_STOP, { repoId: repo.repoId }),
+        sendTo(this.clients.sync, SYNC_PATTERNS.WATCH_STOP, {
+          repoId: repo.repoId,
+        }),
       ),
     );
     await Promise.allSettled(
@@ -144,6 +154,11 @@ export class SetupController {
     return sendTo(this.clients.ai, AI_PATTERNS.PROVIDERS_REMOVE, { id });
   }
 
+  @Post('providers/:id/refresh')
+  refresh(@Param('id') id: string): Promise<ProviderConnection> {
+    return sendTo(this.clients.ai, AI_PATTERNS.PROVIDERS_REFRESH, { id });
+  }
+
   @Post('providers/select')
   select(@Body() body: { model: string; providerId?: string }) {
     return sendTo(this.clients.ai, AI_PATTERNS.PROVIDERS_SELECT, body);
@@ -159,7 +174,9 @@ export class SetupController {
     @Body() body: { hiddenModels?: string[] },
   ): Promise<ModelsState> {
     if (body?.hiddenModels !== undefined && !Array.isArray(body.hiddenModels)) {
-      throw new BadRequestException('hiddenModels must be an array of model keys.');
+      throw new BadRequestException(
+        'hiddenModels must be an array of model keys.',
+      );
     }
     return sendTo(this.clients.ai, AI_PATTERNS.MODELS_VISIBILITY, {
       hiddenModels: body?.hiddenModels ?? [],

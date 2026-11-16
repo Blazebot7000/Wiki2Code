@@ -108,6 +108,8 @@ export const api = {
   }) => post<ProviderConnection>('/providers', body),
   removeProvider: (id: string) =>
     request<{ ok: true }>(`/providers/${id}`, { method: 'DELETE' }),
+  refreshProvider: (id: string) =>
+    post<ProviderConnection>(`/providers/${id}/refresh`),
   selectModel: (model: string, providerId?: string) =>
     post<{ selectedModel?: string; selectedProviderId?: string }>(
       '/providers/select',

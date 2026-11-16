@@ -10,7 +10,12 @@ import {
 } from '@org/contracts';
 import { maskSecret, newId } from '@org/server';
 import { aiSecrets, aiStore } from './ai.store';
-import { chat, validateProvider, type ChatMessage } from './providers';
+import {
+  chat,
+  isFreeModel,
+  validateProvider,
+  type ChatMessage,
+} from './providers';
 
 export interface ModelTarget {
   connection: ProviderConnection;
@@ -89,6 +94,47 @@ export class AiService {
     });
 
     return connection;
+  }
+
+  /**
+   * Re-validate a stored connection with its saved key and replace its model
+   * list with the provider's current catalog. Provider catalogs change over
+   * time, and the user should not have to re-enter a key just to see new
+   * models.
+   */
+  async refresh(id: string): Promise<ProviderConnection> {
+    const connection = aiStore.read().providers.find((item) => item.id === id);
+    if (!connection) {
+      throw new Error('That provider is no longer connected.');
+    }
+
+    const result = await validateProvider({
+      provider: connection.provider,
+      apiKey: aiSecrets.get<string>(connection.id),
+      baseUrl: connection.baseUrl,
+    });
+    if (!result.ok) {
+      aiStore.update((state) => ({
+        ...state,
+        providers: state.providers.map((item) =>
+          item.id === id ? { ...item, status: 'invalid' } : item,
+        ),
+      }));
+      throw new Error(result.message);
+    }
+
+    const updated: ProviderConnection = {
+      ...connection,
+      status: 'connected',
+      models: result.models,
+    };
+    aiStore.update((state) => ({
+      ...state,
+      providers: state.providers.map((item) =>
+        item.id === id ? updated : item,
+      ),
+    }));
+    return updated;
   }
 
   remove(id: string): { ok: true } {
@@ -337,9 +383,7 @@ export class AiService {
       connectionId: connection.id,
       providerLabel:
         connection.label || definition?.name || connection.provider,
-      free:
-        model.free ??
-        (connection.provider === 'ollama' || /:free$/i.test(model.id)),
+      free: model.free ?? isFreeModel(connection.provider, model.id),
     }));
   }
 

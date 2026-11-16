@@ -213,6 +213,18 @@ try {
     JSON.stringify(opencodeBody),
   );
 
+  const missingRefresh = await fetch(
+    `${base}/api/providers/prov_missing/refresh`,
+    { method: 'POST' },
+  );
+  const missingRefreshBody = await missingRefresh.json();
+  check(
+    'unknown provider refresh is reported clearly',
+    missingRefresh.status === 400 &&
+      /no longer connected/i.test(missingRefreshBody.message),
+    `${missingRefresh.status} ${missingRefreshBody.message}`,
+  );
+
   const failures = checks.filter((item) => !item.ok);
   console.log(
     `\n${checks.length - failures.length}/${checks.length} checks passed`,

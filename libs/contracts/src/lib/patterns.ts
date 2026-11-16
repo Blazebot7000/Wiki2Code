@@ -35,6 +35,7 @@ export const AI_PATTERNS = {
   PROVIDERS_VALIDATE: 'ai.providers.validate',
   PROVIDERS_ADD: 'ai.providers.add',
   PROVIDERS_REMOVE: 'ai.providers.remove',
+  PROVIDERS_REFRESH: 'ai.providers.refresh',
   PROVIDERS_SELECT: 'ai.providers.select',
   MODELS_LIST: 'ai.models.list',
   MODELS_VISIBILITY: 'ai.models.visibility',

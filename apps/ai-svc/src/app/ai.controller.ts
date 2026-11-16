@@ -46,6 +46,11 @@ export class AiController {
     return this.ai.remove(payload.id);
   }
 
+  @MessagePattern(AI_PATTERNS.PROVIDERS_REFRESH)
+  refresh(payload: { id: string }) {
+    return this.ai.refresh(payload.id);
+  }
+
   @MessagePattern(AI_PATTERNS.PROVIDERS_SELECT)
   select(payload: { model: string; providerId?: string }) {
     return this.ai.select(payload);
