@@ -965,6 +965,11 @@ textarea:focus-visible {
 }
 
 .model-switcher.is-disabled {
+  /* Keep the disabled state on the trigger only; dimming the whole container
+     (including an open popover) made the option text unreadable. */
+}
+
+.model-switcher.is-disabled .model-switcher__trigger {
   opacity: 0.65;
 }
 
@@ -1032,6 +1037,8 @@ textarea:focus-visible {
   border: 1px solid #33415a;
   border-radius: 12px;
   background: #121a28;
+  opacity: 1;
+  isolation: isolate;
   box-shadow: var(--shadow);
   overflow: hidden;
 }
