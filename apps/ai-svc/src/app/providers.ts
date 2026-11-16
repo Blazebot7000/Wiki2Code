@@ -47,6 +47,20 @@ export function isRateLimitError(error: unknown): boolean {
   return RATE_LIMIT_PATTERN.test(message);
 }
 
+/**
+ * True when the provider says this specific model cannot be used at all (not
+ * just right now). OpenRouter, for example, restricts some free models to
+ * "agentic harnesses" and rejects them for ordinary API clients. Retrying the
+ * same model on another batch would only repeat the failure, so the review
+ * engine skips it and moves on to the next model in the chain.
+ */
+export function isModelUnavailableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /only available on (agentic|certain) (harnesses|apps)|agentic harnesses|model (is )?(not (found|available|supported)|does not exist)|no (endpoints|provider) (available|found)/i.test(
+    message,
+  );
+}
+
 const DEFAULT_BASE: Record<AiProviderId, string> = {
   openai: 'https://api.openai.com/v1',
   anthropic: 'https://api.anthropic.com/v1',

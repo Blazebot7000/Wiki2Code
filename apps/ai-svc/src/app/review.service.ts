@@ -26,7 +26,7 @@ import {
   type MdBlock,
 } from '@org/server';
 import { AiService, type ReviewModelChoice } from './ai.service';
-import { isRateLimitError } from './providers';
+import { isModelUnavailableError, isRateLimitError } from './providers';
 
 interface Finding {
   blockId: string;
@@ -315,6 +315,7 @@ export class ReviewEngineService {
     let failures = 0;
     let lastError: string | undefined;
     let highlightCount = 0;
+    const skippedModels = new Set<string>();
 
     for (let index = 0; index < batches.length; index += 1) {
       const batch = batches[index];
@@ -396,6 +397,55 @@ export class ReviewEngineService {
               }`,
             });
             continue;
+          }
+
+          // A model that OpenRouter (or another provider) refuses to serve to
+          // this app (e.g. "only available on agentic harnesses") cannot be
+          // rescued by retrying; skip it for the rest of this run and try the
+          // next model in the chain instead of failing the batch.
+          if (
+            isModelUnavailableError(error) &&
+            chainIndex + 1 < chain.length
+          ) {
+            skippedModels.add(choice.model);
+            let nextIndex = chainIndex + 1;
+            while (
+              nextIndex < chain.length &&
+              skippedModels.has(chain[nextIndex].model)
+            ) {
+              nextIndex += 1;
+            }
+            if (nextIndex < chain.length) {
+              const previous = choice;
+              chainIndex = nextIndex;
+              choice = chain[chainIndex];
+              fallbacks += 1;
+              if (!usedModels.includes(choice.model)) {
+                usedModels.push(choice.model);
+              }
+              try {
+                this.ai.select({
+                  model: choice.model,
+                  providerId: choice.providerId,
+                });
+              } catch {
+                // the run can continue even if the selection could not be saved
+              }
+              lastError = message;
+              this.logger.warn(
+                `Model ${previous.label ?? previous.model} is not usable in Wiki2Code (${message}); retrying batch ${index + 1}/${batches.length} with ${choice.label ?? choice.model}`,
+              );
+              await this.update(job.id, {
+                model: choice.model,
+                providerId: choice.providerId,
+                models: [...usedModels],
+                fallbacks,
+                stage: `Model unavailable — continuing with ${
+                  choice.label ?? choice.model
+                }`,
+              });
+              continue;
+            }
           }
 
           failures += 1;
