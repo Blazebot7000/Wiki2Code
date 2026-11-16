@@ -665,7 +665,7 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
             {openHighlights.length} finding
             {openHighlights.length === 1 ? '' : 's'} on this page
           </span>
-          <span className="muted">
+          <span className="muted" title={selectedModel}>
             {highlights.filter((item) => item.status === 'stale').length} stale ·
             model {selectedModel ?? 'none'}
           </span>
