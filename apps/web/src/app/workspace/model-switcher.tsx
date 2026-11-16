@@ -229,7 +229,9 @@ export function ModelSwitcher({
         <span className="model-switcher__value" id={`${idBase}-value`}>
           {current ? (
             <>
-              <span className="model-switcher__value-label">{current.label}</span>
+              <span className="model-switcher__value-label" title={current.label}>
+                {current.label}
+              </span>
               {current.free ? <span className="tag tag--free">Free</span> : null}
             </>
           ) : (
@@ -287,15 +289,12 @@ export function ModelSwitcher({
                         onMouseEnter={() => setActiveIndex(index)}
                         onClick={() => choose(model)}
                       >
-                        <span className="model-switcher__option-label">
+                        <span className="model-switcher__option-label" title={model.label}>
                           {model.label}
                         </span>
                         <span className="model-switcher__option-tags">
                           {model.free ? (
                             <span className="tag tag--free">Free</span>
-                          ) : null}
-                          {model.recommended ? (
-                            <span className="tag tag--star">★ Recommended</span>
                           ) : null}
                         </span>
                         <span className="model-switcher__check" aria-hidden="true">

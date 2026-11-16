@@ -397,17 +397,12 @@ export function ModelSettingsDialog({
                               checked={!hidden.has(key)}
                               onChange={() => toggle(model)}
                             />
-                            <span className="model-settings__label">
+                            <span className="model-settings__label" title={model.label}>
                               {model.label}
                             </span>
                             <span className="model-settings__tags">
                               {model.free ? (
                                 <span className="tag tag--free">Free</span>
-                              ) : null}
-                              {model.recommended ? (
-                                <span className="tag tag--star">
-                                  ★ Recommended
-                                </span>
                               ) : null}
                             </span>
                           </label>

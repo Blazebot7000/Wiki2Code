@@ -136,6 +136,25 @@ select {
   color: var(--accent-text);
 }
 
+/* Buttons that start an AI run. Blue with a star so cost-incurring actions
+   are visually distinct from navigation and manual sync. */
+.btn--ai {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  border-color: transparent;
+  color: #08111f;
+  font-weight: 700;
+}
+
+.btn--ai:hover:not(:disabled) {
+  background: linear-gradient(180deg, #82b5ff 0%, #5b98ff 100%);
+}
+
+.btn__star {
+  color: #ffe27a;
+  font-size: 12px;
+  line-height: 1;
+}
+
 .btn--ghost {
   background: transparent;
 }
@@ -1095,12 +1114,6 @@ textarea:focus-visible {
   background: rgba(74, 222, 128, 0.16);
   border: 1px solid rgba(74, 222, 128, 0.45);
   color: #8ef0b0;
-}
-
-.tag--star {
-  background: rgba(245, 196, 81, 0.14);
-  border: 1px solid rgba(245, 196, 81, 0.4);
-  color: #f7d789;
 }
 
 .sync-badge {

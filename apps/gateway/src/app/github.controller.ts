@@ -115,10 +115,6 @@ export class GithubController {
       ...state,
       activeRepoId: repo.repoId,
     }));
-    await sendTo(this.clients.sync, SYNC_PATTERNS.WATCH_START, {
-      repoId: repo.repoId,
-      immediate: false,
-    });
     return repo;
   }
 

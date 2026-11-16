@@ -286,7 +286,8 @@ export interface SyncState {
   repoId: string;
   codeSha?: string;
   wikiSha?: string;
-  checkedAt: string;
+  /** Undefined until the repository has been synced at least once. */
+  checkedAt?: string;
   pendingReview: boolean;
 }
 

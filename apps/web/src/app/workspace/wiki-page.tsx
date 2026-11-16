@@ -195,20 +195,28 @@ export function WikiPageView({
           <div className="hover-card__actions">
             <button
               type="button"
-              className="btn btn--primary btn--small"
+              className="btn btn--ai btn--small"
               disabled={busyHighlightId === hover.highlight.id}
               onClick={() => onFixWiki(hover.highlight)}
+              title="Runs AI and may incur provider costs"
             >
+              <span className="btn__star" aria-hidden="true">
+                ★
+              </span>
               {busyHighlightId === hover.highlight.id
                 ? 'Updating…'
                 : 'Update wiki to match code'}
             </button>
             <button
               type="button"
-              className="btn btn--secondary btn--small"
+              className="btn btn--ai btn--small"
               disabled={busyHighlightId === hover.highlight.id}
               onClick={() => onFixCode(hover.highlight)}
+              title="Runs AI and may incur provider costs"
             >
+              <span className="btn__star" aria-hidden="true">
+                ★
+              </span>
               Fix code to match wiki
             </button>
             <button

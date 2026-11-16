@@ -294,9 +294,15 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
     }
     setSyncing(true);
     try {
-      // Poll first: it is what detects commits pushed outside the app and
-      // starts the incremental review. syncRepo then refreshes local clones.
-      await api.syncNow(activeRepoId).catch(() => undefined);
+      // Poll once to detect commits pushed outside the app and refresh the
+      // local clones. Syncing never runs AI; reviews start only from the AI
+      // review button below.
+      const nextSync = await api
+        .syncNow(activeRepoId)
+        .catch(() => undefined);
+      if (nextSync) {
+        setSyncState(nextSync);
+      }
       const repo = await api.syncRepo(activeRepoId);
       setRepos((current) =>
         current.map((item) => (item.repoId === repo.repoId ? repo : item)),
@@ -478,11 +484,11 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
               </button>
             ) : null}
 
-            <span className="sync-badge" title={syncState?.checkedAt}>
+            <span className="sync-badge" title="Last manual sync">
               <span className="dot dot--live" />
               {syncState?.checkedAt
-                ? `Checked ${timeAgo(syncState.checkedAt)}`
-                : 'Not checked yet'}
+                ? `Synced ${timeAgo(syncState.checkedAt)}`
+                : 'Not synced yet'}
             </span>
 
             <button
@@ -517,10 +523,14 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
 
             <button
               type="button"
-              className="btn btn--primary"
+              className="btn btn--ai"
               onClick={() => void startReview()}
               disabled={!activeRepoId || Boolean(reviewRunning) || startingReview}
+              title="Runs AI and may incur provider costs"
             >
+              <span className="btn__star" aria-hidden="true">
+                ★
+              </span>
               {reviewRunning ? 'Reviewing…' : 'Review wiki'}
             </button>
           </div>
@@ -621,8 +631,8 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
               <h2>No wiki pages yet</h2>
               <p>
                 {activeRepo?.fullName ?? 'This repository'} has an empty wiki.
-                Create the first page on GitHub, then sync — Wiki2Code will pick
-                it up and start watching commits.
+                Create the first page on GitHub, then sync — Wiki2Code will
+                pull it in.
               </p>
               <div className="empty__actions">
                 {activeRepo ? (
