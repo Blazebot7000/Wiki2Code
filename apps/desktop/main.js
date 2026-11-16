@@ -1,17 +1,21 @@
-const { app, BrowserWindow, Menu, shell } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const GATEWAY_URL = process.env.WIKI2CODE_GATEWAY_URL ?? 'http://127.0.0.1:3000';
+const GATEWAY_URL =
+  process.env.WIKI2CODE_GATEWAY_URL ?? 'http://127.0.0.1:3000';
 const DEV_URL = process.env.WIKI2CODE_DEV_URL;
 const USE_EXTERNAL_SERVICES = process.env.WIKI2CODE_EXTERNAL_SERVICES === '1';
 
 // Keep Chromium's profile out of the default "Electron" folder and out of the
 // service data folder (%APPDATA%\Wiki2Code), which holds repos and secrets.
 app.setName('Wiki2Code');
-app.setPath('userData', path.join(app.getPath('appData'), 'Wiki2Code', 'electron'));
+app.setPath(
+  'userData',
+  path.join(app.getPath('appData'), 'Wiki2Code', 'electron'),
+);
 
 const SERVICES = [
   { name: 'github-svc', port: 4001 },
@@ -24,6 +28,15 @@ const SERVICES = [
 const children = new Map();
 let mainWindow = null;
 let shuttingDown = false;
+// The web UI asks us to skip the native text menu when it shows its own
+// "Review selection" menu. The renderer sends this synchronously so the flag
+// is set before the context-menu event is handled.
+let suppressContextMenuUntil = 0;
+
+ipcMain.on('w2c:suppress-context-menu', (event) => {
+  suppressContextMenuUntil = Date.now() + 1000;
+  event.returnValue = true;
+});
 
 function startServices() {
   if (USE_EXTERNAL_SERVICES) {
@@ -137,6 +150,10 @@ function createWindow() {
   // The app hides Electron's menu bar, so without this the webview has no
   // context menu at all and fields feel like right-click is blocked.
   mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (Date.now() < suppressContextMenuUntil) {
+      suppressContextMenuUntil = 0;
+      return;
+    }
     const flags = params.editFlags;
     const template = [];
     if (params.isEditable) {
@@ -199,10 +216,13 @@ if (!gotLock) {
     }
   });
 
-  app.whenReady().then(bootstrap).catch((error) => {
-    console.error('[desktop] failed to start:', error);
-    app.quit();
-  });
+  app
+    .whenReady()
+    .then(bootstrap)
+    .catch((error) => {
+      console.error('[desktop] failed to start:', error);
+      app.quit();
+    });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

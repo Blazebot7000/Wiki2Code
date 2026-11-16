@@ -22,6 +22,7 @@ import {
   type HighlightStatus,
   type ModelInfo,
   type ReviewJob,
+  type ReviewScope,
   type SyncState,
 } from '@org/contracts';
 import { sendTo } from '@org/server';
@@ -38,19 +39,50 @@ export class ReviewController {
     @Body()
     body: {
       model?: string;
+      providerId?: string;
+      scope?: ReviewScope;
+      pageSlug?: string;
+      selection?: string;
+      blockIds?: string[];
       incremental?: boolean;
       changedPaths?: string[];
     },
   ): Promise<ReviewJob> {
-    const model = body?.model ?? (await this.selectedModel());
+    const scope = body?.scope ?? 'whole';
+    if (scope !== 'whole' && scope !== 'page' && scope !== 'selection') {
+      throw new BadRequestException(`Unknown review scope: ${String(scope)}.`);
+    }
+    const pageSlug = body?.pageSlug?.trim();
+    if (scope !== 'whole' && !pageSlug) {
+      throw new BadRequestException('Choose a wiki page for this review.');
+    }
+    const selection = body?.selection?.trim().slice(0, 6000);
+    const blockIds = (Array.isArray(body?.blockIds) ? body.blockIds : [])
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      .slice(0, 80);
+    if (scope === 'selection' && !selection && blockIds.length === 0) {
+      throw new BadRequestException(
+        'Select some wiki text before running a selection review.',
+      );
+    }
+
+    const state = await this.modelSelection();
+    const model = body?.model ?? state.selectedModel;
     if (!model) {
       throw new BadRequestException(
         'Connect an AI provider before running a review.',
       );
     }
+    const providerId =
+      body?.providerId ?? (body?.model ? undefined : state.selectedProviderId);
     return sendTo(this.clients.ai, AI_PATTERNS.REVIEW_START, {
       repoId,
       model,
+      providerId,
+      scope,
+      pageSlug,
+      selection,
+      blockIds,
       incremental: body?.incremental,
       changedPaths: body?.changedPaths,
     });
@@ -110,10 +142,7 @@ export class ReviewController {
   }
 
   @Post('highlights/:id/fix-wiki')
-  async fixWiki(
-    @Param('id') id: string,
-    @Body() body: { model?: string },
-  ) {
+  async fixWiki(@Param('id') id: string, @Body() body: { model?: string }) {
     const highlight = await this.requireHighlight(id);
     const model = body?.model ?? (await this.selectedModel());
     if (!model) {
@@ -207,9 +236,13 @@ export class ReviewController {
         { repoId },
       ),
       sendTo<SyncState>(this.clients.sync, SYNC_PATTERNS.STATE, { repoId }),
-      sendTo<DevCycleJob[]>(this.clients.github, GITHUB_PATTERNS.DEVCYCLE_LIST, {
-        repoId,
-      }),
+      sendTo<DevCycleJob[]>(
+        this.clients.github,
+        GITHUB_PATTERNS.DEVCYCLE_LIST,
+        {
+          repoId,
+        },
+      ),
     ]);
 
     const job = reviews.status === 'fulfilled' ? reviews.value[0] : undefined;
@@ -223,10 +256,17 @@ export class ReviewController {
             progress: job.progress,
             total: job.total,
             highlightCount: job.highlightCount,
+            model: job.model,
+            providerId: job.providerId,
+            models: job.models,
+            fallbacks: job.fallbacks,
+            scope: job.scope,
+            pageSlug: job.pageSlug,
             error: job.error,
           }
         : undefined,
-      highlights: highlights.status === 'fulfilled' ? highlights.value : undefined,
+      highlights:
+        highlights.status === 'fulfilled' ? highlights.value : undefined,
       sync: sync.status === 'fulfilled' ? sync.value : undefined,
       devJobs:
         devJobs.status === 'fulfilled'
@@ -253,12 +293,18 @@ export class ReviewController {
     return highlight;
   }
 
+  private async modelSelection(): Promise<{
+    selectedModel?: string;
+    selectedProviderId?: string;
+  }> {
+    return sendTo<{
+      selectedModel?: string;
+      selectedProviderId?: string;
+      models: ModelInfo[];
+    }>(this.clients.ai, AI_PATTERNS.MODELS_LIST, {});
+  }
+
   private async selectedModel(): Promise<string | undefined> {
-    const result = await sendTo<{ selectedModel?: string; models: ModelInfo[] }>(
-      this.clients.ai,
-      AI_PATTERNS.MODELS_LIST,
-      {},
-    );
-    return result.selectedModel;
+    return (await this.modelSelection()).selectedModel;
   }
 }

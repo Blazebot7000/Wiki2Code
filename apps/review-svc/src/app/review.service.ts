@@ -53,9 +53,43 @@ export class ReviewService {
     return created;
   }
 
+  replaceBlocks(input: {
+    repoId: string;
+    pageSlug: string;
+    blockIds: string[];
+    highlights: Omit<Highlight, 'id' | 'createdAt' | 'updatedAt'>[];
+  }): Highlight[] {
+    const now = new Date().toISOString();
+    const existing = reviewStore.read();
+    const blockIds = new Set(input.blockIds);
+    const kept = existing.highlights.filter(
+      (item) =>
+        !(
+          item.repoId === input.repoId &&
+          item.pageSlug === input.pageSlug &&
+          blockIds.has(item.blockId) &&
+          (item.status === 'open' || item.status === 'stale')
+        ),
+    );
+    const created: Highlight[] = input.highlights.map((item) => ({
+      ...item,
+      id: newId('hl'),
+      createdAt: now,
+      updatedAt: now,
+    }));
+    reviewStore.write({
+      ...existing,
+      highlights: [...kept, ...created],
+      version: existing.version + 1,
+    });
+    return created;
+  }
+
   updateHighlight(
     id: string,
-    patch: Partial<Pick<Highlight, 'status' | 'explanation' | 'wikiSuggestion' | 'codePlan'>>,
+    patch: Partial<
+      Pick<Highlight, 'status' | 'explanation' | 'wikiSuggestion' | 'codePlan'>
+    >,
   ): Highlight | undefined {
     const state = reviewStore.read();
     const index = state.highlights.findIndex((item) => item.id === id);
@@ -168,9 +202,15 @@ export class ReviewService {
     return reviewStore.read().jobs.filter((item) => item.repoId === repoId);
   }
 
-  stateVersion(repoId: string): { version: number; open: number; total: number } {
+  stateVersion(repoId: string): {
+    version: number;
+    open: number;
+    total: number;
+  } {
     const state = reviewStore.read();
-    const highlights = state.highlights.filter((item) => item.repoId === repoId);
+    const highlights = state.highlights.filter(
+      (item) => item.repoId === repoId,
+    );
     return {
       version: state.version,
       open: highlights.filter((item) => item.status === 'open').length,

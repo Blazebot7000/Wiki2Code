@@ -1,10 +1,5 @@
 export type AiProviderId =
-  | 'openai'
-  | 'anthropic'
-  | 'google'
-  | 'openrouter'
-  | 'opencode'
-  | 'ollama';
+  'openai' | 'anthropic' | 'google' | 'openrouter' | 'opencode' | 'ollama';
 
 export interface ProviderDefinition {
   id: AiProviderId;
@@ -202,16 +197,22 @@ export interface Highlight {
 }
 
 export type ReviewJobStatus =
-  | 'queued'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+  'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type ReviewScope = 'whole' | 'page' | 'selection';
 
 export interface ReviewJob {
   id: string;
   repoId: string;
+  /** Model currently doing the work. Changes when a fallback is used. */
   model: string;
+  providerId?: string;
+  /** Every model used by this run, in order, including rate-limit fallbacks. */
+  models?: string[];
+  /** How many times the run switched models after a rate limit. */
+  fallbacks?: number;
+  scope?: ReviewScope;
+  pageSlug?: string;
   status: ReviewJobStatus;
   stage: string;
   progress: number;
@@ -315,6 +316,15 @@ export interface DevPlan {
 export interface ReviewRequest {
   repoId: string;
   model: string;
+  providerId?: string;
+  /** Defaults to "whole". */
+  scope?: ReviewScope;
+  /** Required for "page" and "selection" reviews. */
+  pageSlug?: string;
+  /** Text selected by the user for a "selection" review. */
+  selection?: string;
+  /** Wiki block ids (from parseBlocks) that contain the selection. */
+  blockIds?: string[];
   incremental?: boolean;
   changedPaths?: string[];
 }

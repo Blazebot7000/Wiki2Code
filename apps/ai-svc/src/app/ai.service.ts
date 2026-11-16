@@ -18,6 +18,14 @@ export interface ModelTarget {
   model: string;
 }
 
+/** A model the review engine can try. The provider is explicit so two
+ * connections offering the same model id stay distinguishable. */
+export interface ReviewModelChoice {
+  model: string;
+  providerId?: string;
+  label?: string;
+}
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -54,10 +62,7 @@ export class AiService {
     const connection: ProviderConnection = {
       id: newId('prov'),
       provider: payload.provider,
-      label:
-        payload.label?.trim() ||
-        result.accountLabel ||
-        definition.name,
+      label: payload.label?.trim() || result.accountLabel || definition.name,
       apiKeyMasked: payload.apiKey ? maskSecret(payload.apiKey) : 'local',
       baseUrl: payload.baseUrl?.trim() || undefined,
       status: 'connected',
@@ -125,8 +130,7 @@ export class AiService {
           )
         : undefined) ??
       state.providers.find(
-        (item) =>
-          item.id === state.selectedProviderId && offered(item),
+        (item) => item.id === state.selectedProviderId && offered(item),
       ) ??
       state.providers.find(offered);
     if (!connection) {
@@ -175,9 +179,7 @@ export class AiService {
       );
     }
     const hidden = new Set(hiddenModels);
-    const visible = available.filter(
-      (model) => !hidden.has(modelKey(model)),
-    );
+    const visible = available.filter((model) => !hidden.has(modelKey(model)));
     aiStore.update((state) => ({
       ...state,
       hiddenModels,
@@ -194,9 +196,7 @@ export class AiService {
     const state = aiStore.read();
     const allModels = this.allModels();
     const hidden = new Set(state.hiddenModels ?? []);
-    const visible = allModels.filter(
-      (model) => !hidden.has(modelKey(model)),
-    );
+    const visible = allModels.filter((model) => !hidden.has(modelKey(model)));
     return this.pickSelection(
       state.selectedModel,
       state.selectedProviderId,
@@ -206,6 +206,48 @@ export class AiService {
 
   selectedModel(): string | undefined {
     return this.selection().selectedModel;
+  }
+
+  /**
+   * Ordered models to try for one review run. The requested model comes first,
+   * then visible models from other connections (a rate limit is usually per
+   * provider/key), then the remaining models from the same connection.
+   */
+  reviewChain(model: string, providerId?: string): ReviewModelChoice[] {
+    const resolved = this.resolve(model, providerId);
+    const state = aiStore.read();
+    const hidden = new Set(state.hiddenModels ?? []);
+    const visible = this.allModels().filter(
+      (candidate) => !hidden.has(modelKey(candidate)),
+    );
+
+    const initial: ReviewModelChoice = {
+      model: resolved.model,
+      providerId: resolved.connection.id,
+      label: resolved.connection.label,
+    };
+    const chain = [initial];
+    const seen = new Set([`${initial.providerId}::${initial.model}`]);
+    const sameConnection = visible.filter(
+      (candidate) => candidate.connectionId === initial.providerId,
+    );
+    const otherConnections = visible.filter(
+      (candidate) => candidate.connectionId !== initial.providerId,
+    );
+
+    for (const candidate of [...otherConnections, ...sameConnection]) {
+      const key = `${candidate.connectionId}::${candidate.id}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      chain.push({
+        model: candidate.id,
+        providerId: candidate.connectionId,
+        label: candidate.providerLabel,
+      });
+    }
+    return chain;
   }
 
   resolve(model: string, providerId?: string): ModelTarget {
@@ -253,8 +295,9 @@ export class AiService {
     model: string,
     messages: ChatMessage[],
     options: { json?: boolean; maxTokens?: number; temperature?: number } = {},
+    providerId?: string,
   ): Promise<string> {
-    const target = this.resolve(model);
+    const target = this.resolve(model, providerId);
     try {
       return await chat({
         provider: target.connection.provider,
@@ -292,7 +335,8 @@ export class AiService {
     return connection.models.map((model) => ({
       ...model,
       connectionId: connection.id,
-      providerLabel: connection.label || definition?.name || connection.provider,
+      providerLabel:
+        connection.label || definition?.name || connection.provider,
       free:
         model.free ??
         (connection.provider === 'ollama' || /:free$/i.test(model.id)),
@@ -307,14 +351,10 @@ export class AiService {
     const exact =
       visible.find(
         (model) =>
-          model.id === currentModel &&
-          model.connectionId === currentProviderId,
-      ) ??
-      visible.find((model) => model.id === currentModel);
+          model.id === currentModel && model.connectionId === currentProviderId,
+      ) ?? visible.find((model) => model.id === currentModel);
     const chosen =
-      exact ??
-      visible.find((model) => model.recommended) ??
-      visible[0];
+      exact ?? visible.find((model) => model.recommended) ?? visible[0];
     if (!chosen) {
       return { selectedModel: undefined, selectedProviderId: undefined };
     }

@@ -13,6 +13,7 @@ import type {
   ProviderValidationResult,
   RepoSummary,
   ReviewJob,
+  ReviewScope,
   SetupState,
   SyncState,
   WikiPage,
@@ -135,8 +136,7 @@ export const api = {
     request<{ ok: true }>(`/repos/${repoId}`, { method: 'DELETE' }),
   activateRepo: (repoId: string) =>
     post<{ ok: true; activeRepoId: string }>(`/repos/${repoId}/activate`),
-  syncRepo: (repoId: string) =>
-    post<ConnectedRepo>(`/repos/${repoId}/sync`),
+  syncRepo: (repoId: string) => post<ConnectedRepo>(`/repos/${repoId}/sync`),
 
   wikiPages: (repoId: string) =>
     request<WikiPageMeta[]>(`/repos/${repoId}/wiki`),
@@ -145,16 +145,12 @@ export const api = {
       `/repos/${repoId}/wiki/page?slug=${encodeURIComponent(slug)}`,
     ),
   updateWiki: (repoId: string, slug: string, markdown: string) =>
-    request<WikiUpdateResult>(
-      `/repos/${repoId}/wiki/page`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ slug, markdown }),
-      },
-    ),
+    request<WikiUpdateResult>(`/repos/${repoId}/wiki/page`, {
+      method: 'PUT',
+      body: JSON.stringify({ slug, markdown }),
+    }),
 
-  codeTree: (repoId: string) =>
-    request<string[]>(`/repos/${repoId}/code/tree`),
+  codeTree: (repoId: string) => request<string[]>(`/repos/${repoId}/code/tree`),
   readCode: (repoId: string, path: string) =>
     request<{ path: string; content: string }>(
       `/repos/${repoId}/code/file?path=${encodeURIComponent(path)}`,
@@ -164,13 +160,23 @@ export const api = {
       `/repos/${repoId}/code/search?q=${encodeURIComponent(q)}`,
     ),
 
-  startReview: (repoId: string, body: { model?: string } = {}) =>
-    post<ReviewJob>(`/repos/${repoId}/reviews`, body),
+  startReview: (
+    repoId: string,
+    body: {
+      model?: string;
+      providerId?: string;
+      scope?: ReviewScope;
+      pageSlug?: string;
+      selection?: string;
+      blockIds?: string[];
+      incremental?: boolean;
+      changedPaths?: string[];
+    } = {},
+  ) => post<ReviewJob>(`/repos/${repoId}/reviews`, body),
   review: (jobId: string) => request<ReviewJob>(`/reviews/${jobId}`),
   cancelReview: (jobId: string) =>
     post<{ ok: true }>(`/reviews/${jobId}/cancel`),
-  reviews: (repoId: string) =>
-    request<ReviewJob[]>(`/repos/${repoId}/reviews`),
+  reviews: (repoId: string) => request<ReviewJob[]>(`/repos/${repoId}/reviews`),
 
   highlights: (repoId: string, pageSlug?: string) =>
     request<Highlight[]>(
@@ -205,8 +211,7 @@ export const api = {
     post<SyncState>(`/repos/${repoId}/watch`, { intervalMs }),
   stopWatch: (repoId: string) =>
     request<SyncState>(`/repos/${repoId}/watch`, { method: 'DELETE' }),
-  syncNow: (repoId: string) =>
-    post<SyncState>(`/repos/${repoId}/sync-now`),
+  syncNow: (repoId: string) => post<SyncState>(`/repos/${repoId}/sync-now`),
 };
 
 export function eventsUrl(repoId: string): string {

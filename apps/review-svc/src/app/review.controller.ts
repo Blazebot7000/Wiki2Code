@@ -30,11 +30,18 @@ export class ReviewController {
     return this.reviews.replacePage(payload);
   }
 
-  @MessagePattern(REVIEW_PATTERNS.HIGHLIGHTS_UPDATE)
-  updateHighlight(payload: {
-    id: string;
-    patch: Partial<Highlight>;
+  @MessagePattern(REVIEW_PATTERNS.HIGHLIGHTS_REPLACE_BLOCKS)
+  replaceBlocks(payload: {
+    repoId: string;
+    pageSlug: string;
+    blockIds: string[];
+    highlights: Omit<Highlight, 'id' | 'createdAt' | 'updatedAt'>[];
   }) {
+    return this.reviews.replaceBlocks(payload);
+  }
+
+  @MessagePattern(REVIEW_PATTERNS.HIGHLIGHTS_UPDATE)
+  updateHighlight(payload: { id: string; patch: Partial<Highlight> }) {
     return this.reviews.updateHighlight(payload.id, payload.patch) ?? null;
   }
 

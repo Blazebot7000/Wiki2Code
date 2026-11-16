@@ -5,6 +5,7 @@ import type {
   ModelInfo,
   ModelsState,
   ReviewJob,
+  ReviewScope,
   SetupState,
   SyncState,
   WikiPage,
@@ -31,6 +32,12 @@ interface Digest {
     progress: number;
     total: number;
     highlightCount: number;
+    model?: string;
+    providerId?: string;
+    models?: string[];
+    fallbacks?: number;
+    scope?: ReviewScope;
+    pageSlug?: string;
     error?: string;
   };
   highlights?: { version: number; open: number; total: number };
@@ -67,6 +74,7 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
   const [syncing, setSyncing] = useState(false);
 
   const highlightsVersion = useRef(-1);
+  const startedJobId = useRef<string | undefined>(undefined);
   const activeRepo = repos.find((repo) => repo.repoId === activeRepoId);
 
   const applyModels = useCallback((result: ModelsState) => {
@@ -95,6 +103,25 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
     const timer = setTimeout(() => setToast(undefined), 6000);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  // A rate-limited review can hand off to another model. Keep the switcher in
+  // step with the model doing the work, but do not let an old completed review
+  // from the event feed override the user's current choice.
+  useEffect(() => {
+    if (!job) {
+      return;
+    }
+    const active = job.status === 'running' || job.status === 'queued';
+    if (!active && startedJobId.current !== job.id) {
+      return;
+    }
+    if (job.model) {
+      setSelectedModel(job.model);
+    }
+    if (job.providerId) {
+      setSelectedProviderId(job.providerId);
+    }
+  }, [job]);
 
   useEffect(() => {
     if (!activeRepoId) {
@@ -183,8 +210,9 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
             return {
               ...next,
               repoId: activeRepoId,
-              model: current?.model ?? selectedModel ?? '',
-              startedAt: current?.startedAt ?? new Date().toISOString(),
+              model: next.model ?? current?.model ?? selectedModel ?? '',
+              providerId: next.providerId ?? current?.providerId,
+              startedAt: new Date().toISOString(),
             } as ReviewJob;
           });
         }
@@ -270,7 +298,12 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
     }
   };
 
-  const startReview = async () => {
+  const startReview = async (options: {
+    scope: ReviewScope;
+    pageSlug?: string;
+    selection?: string;
+    blockIds?: string[];
+  }) => {
     if (!activeRepoId) {
       return;
     }
@@ -278,9 +311,21 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
     try {
       const created = await api.startReview(activeRepoId, {
         model: selectedModel,
+        providerId: selectedProviderId,
+        scope: options.scope,
+        pageSlug: options.pageSlug,
+        selection: options.selection,
+        blockIds: options.blockIds,
       });
       setJob(created);
-      setToast('Review started. Highlights will appear as pages are checked.');
+      startedJobId.current = created.id;
+      setToast(
+        options.scope === 'selection'
+          ? 'Reviewing the selected text. Findings will appear on its blocks.'
+          : options.scope === 'page'
+            ? 'Reviewing this page. Highlights will appear when it finishes.'
+            : 'Reviewing the whole wiki. Highlights will appear as pages are checked.',
+      );
     } catch (error) {
       setToast(messageOf(error));
     } finally {
@@ -297,9 +342,7 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
       // Poll once to detect commits pushed outside the app and refresh the
       // local clones. Syncing never runs AI; reviews start only from the AI
       // review button below.
-      const nextSync = await api
-        .syncNow(activeRepoId)
-        .catch(() => undefined);
+      const nextSync = await api.syncNow(activeRepoId).catch(() => undefined);
       if (nextSync) {
         setSyncState(nextSync);
       }
@@ -357,7 +400,9 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
   };
 
   const disconnect = async (repo: ConnectedRepo) => {
-    if (!window.confirm(`Disconnect ${repo.fullName}? Local clones are removed.`)) {
+    if (
+      !window.confirm(`Disconnect ${repo.fullName}? Local clones are removed.`)
+    ) {
       return;
     }
     try {
@@ -459,7 +504,11 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
         </nav>
 
         <footer className="sidebar__foot">
-          <button type="button" className="btn btn--ghost btn--small" onClick={() => void resetSetup()}>
+          <button
+            type="button"
+            className="btn btn--ghost btn--small"
+            onClick={() => void resetSetup()}
+          >
             Reset setup
           </button>
         </footer>
@@ -468,7 +517,9 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
       <main className="main">
         <header className="topbar">
           <div className="topbar__title">
-            <span className="muted">{activeRepo?.fullName ?? 'No repository'}</span>
+            <span className="muted">
+              {activeRepo?.fullName ?? 'No repository'}
+            </span>
             {page ? <h1>{page.title}</h1> : null}
           </div>
 
@@ -524,14 +575,39 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
             <button
               type="button"
               className="btn btn--ai"
-              onClick={() => void startReview()}
-              disabled={!activeRepoId || Boolean(reviewRunning) || startingReview}
+              onClick={() =>
+                void startReview({
+                  scope: 'page',
+                  pageSlug: page?.slug ?? slug,
+                })
+              }
+              disabled={
+                !activeRepoId ||
+                !page ||
+                Boolean(reviewRunning) ||
+                startingReview
+              }
+              title="Runs AI on this page only and may incur provider costs"
+            >
+              <span className="btn__star" aria-hidden="true">
+                ★
+              </span>
+              {reviewRunning ? 'Reviewing…' : 'Review this page'}
+            </button>
+
+            <button
+              type="button"
+              className="btn btn--ai"
+              onClick={() => void startReview({ scope: 'whole' })}
+              disabled={
+                !activeRepoId || Boolean(reviewRunning) || startingReview
+              }
               title="Runs AI and may incur provider costs"
             >
               <span className="btn__star" aria-hidden="true">
                 ★
               </span>
-              {reviewRunning ? 'Reviewing…' : 'Review wiki'}
+              {reviewRunning ? 'Reviewing…' : 'Review whole wiki'}
             </button>
           </div>
         </header>
@@ -546,10 +622,20 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
             <span className="muted">
               {job?.progress ?? 0}/{job?.total || '…'}
             </span>
+            {job?.fallbacks ? (
+              <span
+                className="muted review-strip__model"
+                title={job.models?.join(' → ')}
+              >
+                now {job.model}
+              </span>
+            ) : null}
             <button
               type="button"
               className="btn btn--ghost btn--small"
-              onClick={() => void api.cancelReview(job!.id).catch(() => undefined)}
+              onClick={() =>
+                void api.cancelReview(job!.id).catch(() => undefined)
+              }
             >
               Cancel
             </button>
@@ -557,7 +643,9 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
         ) : job ? (
           <div
             className={`review-strip ${
-              job.status === 'failed' ? 'review-strip--bad' : 'review-strip--done'
+              job.status === 'failed'
+                ? 'review-strip--bad'
+                : 'review-strip--done'
             }`}
           >
             <span>
@@ -567,7 +655,15 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
                   ? 'Review cancelled. Existing highlights were kept.'
                   : `Review complete — ${job.highlightCount} finding${
                       job.highlightCount === 1 ? '' : 's'
-                    }.`}
+                    }.${
+                      job.fallbacks
+                        ? ` Hit ${job.fallbacks} rate limit${
+                            job.fallbacks === 1 ? '' : 's'
+                          } and continued with ${
+                            job.models?.[job.models.length - 1] ?? job.model
+                          }.`
+                        : ''
+                    }`}
             </span>
             <button
               type="button"
@@ -622,6 +718,18 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
               page={page}
               highlights={openHighlights}
               busyHighlightId={busyHighlightId}
+              reviewingSelection={Boolean(reviewRunning) || startingReview}
+              onReviewSelection={(input) => {
+                if (!page) {
+                  return;
+                }
+                void startReview({
+                  scope: 'selection',
+                  pageSlug: page.slug,
+                  selection: input.text,
+                  blockIds: input.blockIds,
+                });
+              }}
               onFixWiki={(highlight) => void fixWiki(highlight)}
               onFixCode={(highlight) => void fixCode(highlight)}
               onDismiss={(highlight) => void dismiss(highlight)}
@@ -631,8 +739,8 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
               <h2>No wiki pages yet</h2>
               <p>
                 {activeRepo?.fullName ?? 'This repository'} has an empty wiki.
-                Create the first page on GitHub, then sync — Wiki2Code will
-                pull it in.
+                Create the first page on GitHub, then sync — Wiki2Code will pull
+                it in.
               </p>
               <div className="empty__actions">
                 {activeRepo ? (
@@ -666,8 +774,8 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
             {openHighlights.length === 1 ? '' : 's'} on this page
           </span>
           <span className="muted" title={selectedModel}>
-            {highlights.filter((item) => item.status === 'stale').length} stale ·
-            model {selectedModel ?? 'none'}
+            {highlights.filter((item) => item.status === 'stale').length} stale
+            · model {selectedModel ?? 'none'}
           </span>
         </footer>
       </main>

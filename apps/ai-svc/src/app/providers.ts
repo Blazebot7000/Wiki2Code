@@ -20,6 +20,33 @@ export interface ChatRequest {
   json?: boolean;
 }
 
+/** Provider HTTP failure with the status code kept for retry/fallback logic. */
+export class ChatError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'ChatError';
+  }
+}
+
+const RATE_LIMIT_PATTERN =
+  /(rate[\s_-]*limit|too many requests|resource[_ ]exhausted|quota|overloaded|capacity)/i;
+
+/**
+ * True when another provider/model may succeed right away. Besides HTTP 429
+ * this covers providers that report quota exhaustion or an overloaded model
+ * with a different status code.
+ */
+export function isRateLimitError(error: unknown): boolean {
+  if (error instanceof ChatError && error.status === 429) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return RATE_LIMIT_PATTERN.test(message);
+}
+
 const DEFAULT_BASE: Record<AiProviderId, string> = {
   openai: 'https://api.openai.com/v1',
   anthropic: 'https://api.anthropic.com/v1',
@@ -122,7 +149,10 @@ export async function validateProvider(input: {
         }
         const body = (await response.json()) as { data?: { id: string }[] };
         const models = (body.data ?? [])
-          .filter((model) => !/embedding|tts|whisper|dall-e|moderation/i.test(model.id))
+          .filter(
+            (model) =>
+              !/embedding|tts|whisper|dall-e|moderation/i.test(model.id),
+          )
           .map((model) => toModel('openai', model.id))
           .sort(sortModels)
           .slice(0, 60);
@@ -179,7 +209,9 @@ export async function validateProvider(input: {
         };
         const models = (body.models ?? [])
           .filter((model) =>
-            (model.supportedGenerationMethods ?? []).includes('generateContent'),
+            (model.supportedGenerationMethods ?? []).includes(
+              'generateContent',
+            ),
           )
           .map((model) =>
             toModel(
@@ -205,7 +237,11 @@ export async function validateProvider(input: {
           headers: { Authorization: `Bearer ${key}` },
         });
         if (!keyResponse.ok) {
-          return { ok: false, message: await readError(keyResponse), models: [] };
+          return {
+            ok: false,
+            message: await readError(keyResponse),
+            models: [],
+          };
         }
         const keyBody = (await keyResponse.json()) as {
           data?: { label?: string };
@@ -293,7 +329,9 @@ export async function validateProvider(input: {
           models?: { name: string }[];
         };
         const models = (body.models ?? [])
-          .map((model) => toModel('ollama', model.name, undefined, { free: true }))
+          .map((model) =>
+            toModel('ollama', model.name, undefined, { free: true }),
+          )
           .sort(sortModels);
         return {
           ok: true,
@@ -341,7 +379,10 @@ export async function chat(request: ChatRequest): Promise<string> {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${request.apiKey ?? ''}`,
           ...(request.provider === 'openrouter'
-            ? { 'HTTP-Referer': 'https://wiki2code.local', 'X-Title': 'Wiki2Code' }
+            ? {
+                'HTTP-Referer': 'https://wiki2code.local',
+                'X-Title': 'Wiki2Code',
+              }
             : {}),
         },
         body: JSON.stringify({
@@ -357,7 +398,7 @@ export async function chat(request: ChatRequest): Promise<string> {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readError(response));
+        throw new ChatError(await readError(response), response.status);
       }
       const body = (await response.json()) as {
         choices?: { message?: { content?: string } }[];
@@ -392,7 +433,7 @@ export async function chat(request: ChatRequest): Promise<string> {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readError(response));
+        throw new ChatError(await readError(response), response.status);
       }
       const body = (await response.json()) as {
         content?: { type: string; text?: string }[];
@@ -421,7 +462,9 @@ export async function chat(request: ChatRequest): Promise<string> {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             contents,
-            ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+            ...(system
+              ? { systemInstruction: { parts: [{ text: system }] } }
+              : {}),
             generationConfig: {
               temperature,
               maxOutputTokens: request.maxTokens ?? 4000,
@@ -431,7 +474,7 @@ export async function chat(request: ChatRequest): Promise<string> {
         },
       );
       if (!response.ok) {
-        throw new Error(await readError(response));
+        throw new ChatError(await readError(response), response.status);
       }
       const body = (await response.json()) as {
         candidates?: { content?: { parts?: { text?: string }[] } }[];
@@ -454,7 +497,7 @@ export async function chat(request: ChatRequest): Promise<string> {
         }),
       });
       if (!response.ok) {
-        throw new Error(await readError(response));
+        throw new ChatError(await readError(response), response.status);
       }
       const body = (await response.json()) as {
         message?: { content?: string };

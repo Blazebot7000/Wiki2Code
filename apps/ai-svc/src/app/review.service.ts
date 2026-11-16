@@ -9,6 +9,7 @@ import {
   type HighlightSeverity,
   type ReviewJob,
   type ReviewRequest,
+  type ReviewScope,
   type WikiPage,
   type WikiPageMeta,
 } from '@org/contracts';
@@ -24,7 +25,8 @@ import {
   truncate,
   type MdBlock,
 } from '@org/server';
-import { AiService } from './ai.service';
+import { AiService, type ReviewModelChoice } from './ai.service';
+import { isRateLimitError } from './providers';
 
 interface Finding {
   blockId: string;
@@ -43,6 +45,39 @@ interface BatchResult {
 const MAX_BATCH_BLOCKS = 5;
 const MAX_BATCH_CHARS = 4200;
 
+function normalizeSelectionText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#>*_`~|[\]()!-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Fallback anchor for a selection when the renderer could not send block ids
+ * (for example after the page changed underneath the user).
+ */
+function matchesSelection(blockText: string, selection: string): boolean {
+  const needle = normalizeSelectionText(selection).slice(0, 160);
+  if (!needle) {
+    return false;
+  }
+  const haystack = normalizeSelectionText(blockText);
+  if (haystack.includes(needle)) {
+    return true;
+  }
+  const words = needle
+    .split(' ')
+    .filter((word) => word.length > 2)
+    .slice(0, 12);
+  if (!words.length) {
+    return false;
+  }
+  const hits = words.filter((word) => haystack.includes(word)).length;
+  return hits >= Math.min(3, words.length);
+}
+
 const SYSTEM_PROMPT = `You are Wiki2Code's documentation auditor. You compare a project's wiki documentation with its actual source code and report only real contradictions.
 
 Rules:
@@ -52,6 +87,7 @@ Rules:
 - "explanation" must state what the code actually does and how that differs from the wiki text.
 - "wikiSuggestion" must be replacement markdown for that block that makes it accurate, preserving the original formatting style.
 - "codePlan" must be a short, concrete implementation plan that would change the code to match the documentation.
+- When the request includes SELECTED TEXT, review only claims made inside that passage and ignore the rest of the blocks.
 - Respond with JSON only, matching the requested schema.`;
 
 @Injectable()
@@ -72,19 +108,31 @@ export class ReviewEngineService {
     if (!model) {
       throw new Error('Connect an AI provider before reviewing.');
     }
+    const chain = this.ai.reviewChain(model, payload.providerId);
+    const scope: ReviewScope = payload.scope ?? 'whole';
     const job: ReviewJob = {
       id: newId('rev'),
       repoId: payload.repoId,
-      model,
+      model: chain[0].model,
+      providerId: chain[0].providerId,
+      models: [chain[0].model],
+      fallbacks: 0,
+      scope,
+      pageSlug: scope === 'whole' ? undefined : payload.pageSlug,
       status: 'queued',
-      stage: 'Queued',
+      stage:
+        scope === 'selection'
+          ? 'Queued (selected text)'
+          : scope === 'page'
+            ? 'Queued (this page)'
+            : 'Queued',
       progress: 0,
       total: 0,
       highlightCount: 0,
       startedAt: new Date().toISOString(),
     };
     await sendTo(this.reviews, REVIEW_PATTERNS.JOBS_CREATE, job);
-    void this.run(job, { ...payload, model })
+    void this.run(job, { ...payload, model, scope }, chain)
       .catch((error) => {
         if (this.cancelled.has(job.id)) {
           return;
@@ -125,13 +173,22 @@ export class ReviewEngineService {
     return { ok: true };
   }
 
-  private async run(job: ReviewJob, payload: ReviewRequest): Promise<void> {
-    await this.review(job, payload);
+  private async run(
+    job: ReviewJob,
+    payload: ReviewRequest,
+    chain: ReviewModelChoice[],
+  ): Promise<void> {
+    await this.review(job, payload, chain);
   }
 
-  private async review(job: ReviewJob, payload: ReviewRequest): Promise<void> {
+  private async review(
+    job: ReviewJob,
+    payload: ReviewRequest,
+    chain: ReviewModelChoice[],
+  ): Promise<void> {
     await this.update(job.id, { status: 'running', stage: 'Loading wiki' });
 
+    const scope: ReviewScope = payload.scope ?? 'whole';
     const pages = await sendTo<WikiPageMeta[]>(
       this.github,
       GITHUB_PATTERNS.WIKI_LIST,
@@ -140,6 +197,30 @@ export class ReviewEngineService {
     if (!pages.length) {
       throw new Error(
         'This repository has no wiki pages yet. Create a page on GitHub, then sync.',
+      );
+    }
+
+    const pageSlug = payload.pageSlug?.trim();
+    if (scope !== 'whole' && !pageSlug) {
+      throw new Error('Choose a wiki page before starting this review.');
+    }
+    const targetPages =
+      scope === 'whole'
+        ? pages
+        : pages.filter((page) => page.slug === pageSlug);
+    if (!targetPages.length) {
+      throw new Error(`Wiki page "${pageSlug}" was not found.`);
+    }
+
+    const selection = payload.selection?.trim() ?? '';
+    const selectedBlockIds = new Set(
+      (payload.blockIds ?? []).filter(
+        (id): id is string => typeof id === 'string' && id.length > 0,
+      ),
+    );
+    if (scope === 'selection' && !selection && selectedBlockIds.size === 0) {
+      throw new Error(
+        'Select some wiki text before asking for a selection review.',
       );
     }
 
@@ -156,7 +237,7 @@ export class ReviewEngineService {
 
     const pagePlans: { meta: WikiPageMeta; blocks: MdBlock[] }[] = [];
 
-    for (const meta of pages) {
+    for (const meta of targetPages) {
       const page = await sendTo<WikiPage>(
         this.github,
         GITHUB_PATTERNS.WIKI_GET,
@@ -165,7 +246,19 @@ export class ReviewEngineService {
       let blocks = parseBlocks(page.markdown).filter(
         (block) => block.type !== 'hr' && block.text.trim().length > 0,
       );
-      if (payload.incremental && payload.changedPaths?.length) {
+      if (scope === 'selection') {
+        const matched = blocks.filter((block) =>
+          selectedBlockIds.has(block.id),
+        );
+        blocks = matched.length
+          ? matched
+          : blocks.filter((block) => matchesSelection(block.text, selection));
+      }
+      if (
+        scope === 'whole' &&
+        payload.incremental &&
+        payload.changedPaths?.length
+      ) {
         const changed = payload.changedPaths.map((path) =>
           path.toLowerCase().replace(/\\/g, '/'),
         );
@@ -208,58 +301,111 @@ export class ReviewEngineService {
       }
     }
 
-    await this.update(job.id, { total: batches.length, stage: 'Reviewing wiki' });
+    await this.update(job.id, {
+      total: batches.length,
+      stage: 'Reviewing wiki',
+    });
 
     const collected = new Map<string, Highlight[]>();
     const failedPages = new Set<string>();
+    const usedModels = [chain[0].model];
+    let chainIndex = 0;
+    let choice = chain[chainIndex];
+    let fallbacks = 0;
     let failures = 0;
     let lastError: string | undefined;
     let highlightCount = 0;
 
     for (let index = 0; index < batches.length; index += 1) {
-      if (this.cancelled.has(job.id)) {
-        return;
-      }
       const batch = batches[index];
-      await this.update(job.id, {
-        progress: index,
-        stage: `Reviewing ${batch.meta.title} (${index + 1}/${batches.length})`,
-      });
 
-      try {
-        const findings = await this.reviewBatch(
-          payload.repoId,
-          batch.meta,
-          batch.blocks,
-          payload.model,
-          codeTree,
-        );
-        const existing = collected.get(batch.meta.slug) ?? [];
-        collected.set(
-          batch.meta.slug,
-          existing.concat(
-            findings.map((finding) =>
-              this.toHighlight({
-                finding,
-                repoId: payload.repoId,
-                page: batch.meta,
-                block: batch.blocks.find(
-                  (block) => block.id === finding.blockId,
-                ),
-                model: payload.model,
-                commitSha: repo.lastWikiSha ?? '',
-              }),
+      // Retry the same batch after a rate limit, so the fallback model
+      // continues exactly where the previous model stopped instead of
+      // restarting the review.
+      while (true) {
+        if (this.cancelled.has(job.id)) {
+          return;
+        }
+        await this.update(job.id, {
+          progress: index,
+          stage: `Reviewing ${batch.meta.title} (${index + 1}/${batches.length})`,
+        });
+
+        try {
+          const findings = await this.reviewBatch(
+            payload.repoId,
+            batch.meta,
+            batch.blocks,
+            choice.model,
+            choice.providerId,
+            codeTree,
+            scope === 'selection' ? selection : undefined,
+          );
+          const existing = collected.get(batch.meta.slug) ?? [];
+          collected.set(
+            batch.meta.slug,
+            existing.concat(
+              findings.map((finding) =>
+                this.toHighlight({
+                  finding,
+                  repoId: payload.repoId,
+                  page: batch.meta,
+                  block: batch.blocks.find(
+                    (block) => block.id === finding.blockId,
+                  ),
+                  model: choice.model,
+                  commitSha: repo.lastWikiSha ?? '',
+                }),
+              ),
             ),
-          ),
-        );
-        highlightCount += findings.length;
-      } catch (error) {
-        failures += 1;
-        failedPages.add(batch.meta.slug);
-        lastError = error instanceof Error ? error.message : String(error);
-        this.logger.warn(
-          `Batch ${index + 1}/${batches.length} failed: ${lastError}`,
-        );
+          );
+          highlightCount += findings.length;
+          break;
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (isRateLimitError(error) && chainIndex + 1 < chain.length) {
+            const previous = choice;
+            chainIndex += 1;
+            choice = chain[chainIndex];
+            fallbacks += 1;
+            if (!usedModels.includes(choice.model)) {
+              usedModels.push(choice.model);
+            }
+            // Remember the fallback as the user's model so later AI actions
+            // keep working instead of hitting the same exhausted model.
+            try {
+              this.ai.select({
+                model: choice.model,
+                providerId: choice.providerId,
+              });
+            } catch {
+              // the run can continue even if the selection could not be saved
+            }
+            lastError = message;
+            this.logger.warn(
+              `Rate limit with ${previous.label ?? previous.model}; retrying batch ${index + 1}/${batches.length} with ${choice.label ?? choice.model}`,
+            );
+            await this.update(job.id, {
+              model: choice.model,
+              providerId: choice.providerId,
+              models: [...usedModels],
+              fallbacks,
+              stage: `Rate limit reached — continuing with ${
+                choice.label ?? choice.model
+              }`,
+            });
+            continue;
+          }
+
+          failures += 1;
+          failedPages.add(batch.meta.slug);
+          lastError = message;
+          this.logger.warn(
+            `Batch ${index + 1}/${batches.length} failed: ${lastError}`,
+          );
+          break;
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -270,7 +416,8 @@ export class ReviewEngineService {
     }
 
     // Keep the previous highlights for pages whose batch failed: replacing them
-    // with an empty list would silently erase real findings.
+    // with an empty list would silently erase real findings. Selection reviews
+    // replace only the blocks they covered.
     for (const plan of pagePlans) {
       if (this.cancelled.has(job.id)) {
         return;
@@ -281,11 +428,23 @@ export class ReviewEngineService {
       const highlights = (collected.get(plan.meta.slug) ?? []).filter(
         (item) => item.lineStart > 0,
       );
-      await sendTo(this.reviews, REVIEW_PATTERNS.HIGHLIGHTS_REPLACE_PAGE, {
-        repoId: payload.repoId,
-        pageSlug: plan.meta.slug,
-        highlights: highlights.map(({ id: _id, createdAt: _c, updatedAt: _u, ...rest }) => rest),
-      });
+      const payloadHighlights = highlights.map(
+        ({ id: _id, createdAt: _c, updatedAt: _u, ...rest }) => rest,
+      );
+      if (scope === 'selection') {
+        await sendTo(this.reviews, REVIEW_PATTERNS.HIGHLIGHTS_REPLACE_BLOCKS, {
+          repoId: payload.repoId,
+          pageSlug: plan.meta.slug,
+          blockIds: plan.blocks.map((block) => block.id),
+          highlights: payloadHighlights,
+        });
+      } else {
+        await sendTo(this.reviews, REVIEW_PATTERNS.HIGHLIGHTS_REPLACE_PAGE, {
+          repoId: payload.repoId,
+          pageSlug: plan.meta.slug,
+          highlights: payloadHighlights,
+        });
+      }
     }
 
     if (failures > 0) {
@@ -305,6 +464,10 @@ export class ReviewEngineService {
       stage: 'Review complete',
       highlightCount,
       progress: batches.length,
+      model: choice.model,
+      providerId: choice.providerId,
+      models: usedModels,
+      fallbacks,
     });
   }
 
@@ -313,7 +476,9 @@ export class ReviewEngineService {
     page: WikiPageMeta,
     blocks: MdBlock[],
     model: string,
+    providerId: string | undefined,
     codeTree: Set<string>,
+    selection?: string,
   ): Promise<Finding[]> {
     const context = await this.collectContext(repoId, blocks);
     const blockPayload = blocks.map((block) => ({
@@ -326,6 +491,15 @@ export class ReviewEngineService {
     const user = [
       `PAGE: ${page.title} (${page.slug})`,
       '',
+      ...(selection?.trim()
+        ? [
+            'SELECTED TEXT (review this passage and ignore the rest):',
+            '"""',
+            truncate(selection.trim(), 4000),
+            '"""',
+            '',
+          ]
+        : []),
       'WIKI BLOCKS:',
       JSON.stringify(blockPayload, null, 2),
       '',
@@ -343,6 +517,7 @@ export class ReviewEngineService {
         { role: 'user', content: user },
       ],
       { json: true, maxTokens: 4000, temperature: 0.1 },
+      providerId,
     );
 
     const parsed = extractJson<BatchResult>(raw);
@@ -384,11 +559,13 @@ export class ReviewEngineService {
         continue;
       }
       try {
-        const hits = await sendTo<{ path: string; line: number; text: string }[]>(
-          this.github,
-          GITHUB_PATTERNS.CODE_SEARCH,
-          { repoId, terms, maxFiles: 8 },
-        );
+        const hits = await sendTo<
+          { path: string; line: number; text: string }[]
+        >(this.github, GITHUB_PATTERNS.CODE_SEARCH, {
+          repoId,
+          terms,
+          maxFiles: 8,
+        });
         for (const hit of hits) {
           paths.add(hit.path);
           if (paths.size >= 6) {
@@ -450,7 +627,9 @@ export class ReviewEngineService {
       quote: truncate(block?.text ?? '', 500),
       severity: input.finding.severity,
       status: 'open',
-      title: input.finding.title || (block ? blockTitle(block) : 'Wiki/code mismatch'),
+      title:
+        input.finding.title ||
+        (block ? blockTitle(block) : 'Wiki/code mismatch'),
       explanation: input.finding.explanation,
       codeRefs: input.finding.codeRefs,
       wikiSuggestion: input.finding.wikiSuggestion,
@@ -473,10 +652,7 @@ export class ReviewEngineService {
     });
   }
 
-  private finish(
-    jobId: string,
-    patch: Partial<ReviewJob>,
-  ): Promise<unknown> {
+  private finish(jobId: string, patch: Partial<ReviewJob>): Promise<unknown> {
     return this.update(jobId, {
       ...patch,
       finishedAt: new Date().toISOString(),

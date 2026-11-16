@@ -49,6 +49,7 @@ export const REVIEW_PATTERNS = {
   HIGHLIGHTS_LIST: 'review.highlights.list',
   HIGHLIGHTS_GET: 'review.highlights.get',
   HIGHLIGHTS_REPLACE_PAGE: 'review.highlights.replacePage',
+  HIGHLIGHTS_REPLACE_BLOCKS: 'review.highlights.replaceBlocks',
   HIGHLIGHTS_UPDATE: 'review.highlights.update',
   HIGHLIGHTS_MARK_STALE: 'review.highlights.markStale',
   HIGHLIGHTS_CLEAR_REPO: 'review.highlights.clearRepo',

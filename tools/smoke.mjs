@@ -15,12 +15,16 @@ const env = {
 };
 
 for (const name of services) {
-  const child = spawn(process.execPath, [join(ROOT, 'apps', name, 'dist', 'main.js')], {
-    cwd: ROOT,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  const child = spawn(
+    process.execPath,
+    [join(ROOT, 'apps', name, 'dist', 'main.js')],
+    {
+      cwd: ROOT,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  );
   child.stdout.on('data', (chunk) => {
     for (const line of String(chunk).split(/\r?\n/)) {
       if (line.includes('listening') || line.includes('gateway')) {
@@ -52,18 +56,32 @@ async function waitForGateway() {
 
 function check(name, condition, detail) {
   checks.push({ name, ok: Boolean(condition), detail });
-  console.log(`${condition ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(
+    `${condition ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`,
+  );
 }
 
 try {
   const setup = await waitForGateway();
-  check('setup state loads', setup && setup.completed === false, JSON.stringify(setup));
-  check('no providers initially', Array.isArray(setup.providers) && setup.providers.length === 0);
+  check(
+    'setup state loads',
+    setup && setup.completed === false,
+    JSON.stringify(setup),
+  );
+  check(
+    'no providers initially',
+    Array.isArray(setup.providers) && setup.providers.length === 0,
+  );
 
   const index = await fetch(`${base}/`);
-  check('gateway serves the web UI', index.ok && (await index.text()).includes('<div id="root">'));
+  check(
+    'gateway serves the web UI',
+    index.ok && (await index.text()).includes('<div id="root">'),
+  );
 
-  const complete = await fetch(`${base}/api/setup/complete`, { method: 'POST' });
+  const complete = await fetch(`${base}/api/setup/complete`, {
+    method: 'POST',
+  });
   const completeBody = await complete.json();
   check(
     'setup cannot complete without providers',
@@ -93,7 +111,10 @@ try {
 
   const models = await fetch(`${base}/api/models`);
   const modelsBody = await models.json();
-  check('models endpoint is reachable', models.ok && Array.isArray(modelsBody.models));
+  check(
+    'models endpoint is reachable',
+    models.ok && Array.isArray(modelsBody.models),
+  );
   check(
     'models response includes settings metadata',
     models.ok &&
@@ -126,6 +147,56 @@ try {
     'invalid model visibility payload is rejected',
     badVisibility.status === 400,
     String(badVisibility.status),
+  );
+
+  const badScope = await fetch(`${base}/api/repos/owner__missing/reviews`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'test-model', scope: 'every-page' }),
+  });
+  const badScopeBody = await badScope.json();
+  check(
+    'unknown review scope is rejected',
+    badScope.status === 400 && /scope/i.test(badScopeBody.message),
+    `${badScope.status} ${badScopeBody.message}`,
+  );
+
+  const pageWithoutSlug = await fetch(
+    `${base}/api/repos/owner__missing/reviews`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'test-model', scope: 'page' }),
+    },
+  );
+  const pageWithoutSlugBody = await pageWithoutSlug.json();
+  check(
+    'page review requires a page slug',
+    pageWithoutSlug.status === 400 &&
+      /wiki page/i.test(pageWithoutSlugBody.message),
+    `${pageWithoutSlug.status} ${pageWithoutSlugBody.message}`,
+  );
+
+  const emptySelection = await fetch(
+    `${base}/api/repos/owner__missing/reviews`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'test-model',
+        scope: 'selection',
+        pageSlug: 'home',
+        selection: '   ',
+        blockIds: [],
+      }),
+    },
+  );
+  const emptySelectionBody = await emptySelection.json();
+  check(
+    'selection review requires selected text',
+    emptySelection.status === 400 &&
+      /wiki text/i.test(emptySelectionBody.message),
+    `${emptySelection.status} ${emptySelectionBody.message}`,
   );
 
   const opencode = await fetch(`${base}/api/providers/validate`, {
