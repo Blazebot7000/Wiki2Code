@@ -1027,9 +1027,7 @@ textarea:focus-visible {
 }
 
 .model-switcher__popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   z-index: 70;
   width: min(460px, calc(100vw - 32px));
   display: flex;
