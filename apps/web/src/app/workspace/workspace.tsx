@@ -499,7 +499,7 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
               className="btn btn--ghost btn--small topbar__settings"
               onClick={() => setSettingsOpen(true)}
               aria-haspopup="dialog"
-              title="Choose which models appear in the dropdown"
+              title="Choose models and connect AI providers"
             >
               <span aria-hidden="true">⚙</span> Settings
             </button>
@@ -676,12 +676,14 @@ export function Workspace({ initial, onReset }: WorkspaceProps) {
         <ModelSettingsDialog
           allModels={allModels}
           hiddenModels={hiddenModels}
+          reviewRunning={Boolean(reviewRunning)}
           onClose={() => setSettingsOpen(false)}
           onSaved={(state) => {
             applyModels(state);
             setSettingsOpen(false);
             setToast('Model list updated.');
           }}
+          onModelsChanged={applyModels}
         />
       ) : null}
 

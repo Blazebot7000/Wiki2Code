@@ -323,7 +323,7 @@ export function ModelSwitcher({
                   onOpenSettings();
                 }}
               >
-                Manage models…
+                Manage models &amp; providers…
               </button>
             </div>
           ) : null}
